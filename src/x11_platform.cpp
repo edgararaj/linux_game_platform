@@ -211,10 +211,10 @@ int main()
 		}
 	}
 
-	auto x_offset = 0;
-	auto y_offset = 0;
-	auto axis0 = 0;
-	auto axis1 = 0;
+	auto x_offset = 0.f;
+	auto y_offset = 0.f;
+	auto axis0 = 0.f;
+	auto axis1 = 0.f;
 
 	auto buffer_size_changed = 0;
 	auto timer_start = get_time_in_ns();
@@ -231,20 +231,20 @@ int main()
 					//printf("[JOYSTICK]: Button %i pressed\n", joy_event.number);
 				} else if (joy_event.type & JS_EVENT_AXIS) {
 					//printf("[JOYSTICK]: Axis %i updated with: %i\n", joy_event.number, joy_event.value);
-					auto pos_threshold = data.range_max / 3;
-					auto neg_threshold = data.range_min / 3;
+					auto pos_threshold = data.range_max / 5;
+					auto neg_threshold = data.range_min / 5;
 					if (joy_event.number == 0) {
 						if (joy_event.value > pos_threshold)
-							axis0 = 1;
+							axis0 = (float)joy_event.value / data.range_max;
 						else if (joy_event.value < neg_threshold)
-							axis0 = -1;
+							axis0 = -(float)joy_event.value / data.range_min;
 						else
 							axis0 = 0;
 					} else if (joy_event.number == 1) {
 						if (joy_event.value > pos_threshold)
-							axis1 = 1;
+							axis1 = (float)joy_event.value / data.range_max;
 						else if (joy_event.value < neg_threshold)
-							axis1 = -1;
+							axis1 = -(float)joy_event.value / data.range_min;
 						else
 							axis1 = 0;
 					}
@@ -252,8 +252,8 @@ int main()
 			}
 		}
 
-		x_offset += axis0;
-		y_offset += axis1;
+		x_offset += axis0 * 1.5;
+		y_offset += axis1 * 1.5;
 
 		XEvent event;
 		while (XPending(display) > 0) {
