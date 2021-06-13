@@ -2,16 +2,31 @@
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 #include <X11/extensions/XShm.h>
+#include <fcntl.h>
+#include <linux/joystick.h>
 #include <malloc.h>
 #include <math.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <sys/ipc.h>
 #include <sys/shm.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <time.h>
+#include <unistd.h>
+
+typedef uint8_t u8;
+typedef uint16_t u16;
+typedef uint32_t u32;
+typedef uint64_t u64;
+typedef int8_t i8;
+typedef int16_t i16;
+typedef int32_t i32;
+typedef int64_t i64;
 
 #define countof(x) (sizeof(x) / sizeof((x)[0]))
 
-auto use_xshm = 1;
+auto use_xshm = true;
 
 int get_time_in_ns()
 {
@@ -65,7 +80,7 @@ bool create_buffer(ScreenBuffer& buffer, int width, int height, int pixel_bits, 
 
 		shmctl(buffer.shminfo.shmid, IPC_RMID, 0); // Mark shared buffer for removal after process end; cant do on create_buffer because it crashes
 
-		printf("MIT-SHM: Shared memory KID=%d, at=%p\n", buffer.shminfo.shmid, buffer.shminfo.shmaddr);
+		printf("[MIT-SHM]: Shared memory KID=%d, at=%p\n", buffer.shminfo.shmid, buffer.shminfo.shmaddr);
 
 	} else {
 		buffer.mem = (char*)malloc(buffer.byte_size());
@@ -80,13 +95,22 @@ bool create_buffer(ScreenBuffer& buffer, int width, int height, int pixel_bits, 
 	return 1;
 }
 
+struct JoyCalibrationData {
+	bool calibrate;
+	bool invert;
+	int center_min;
+	int center_max;
+	int range_min;
+	int range_max;
+};
+
 int main()
 {
 	auto display = XOpenDisplay(0);
 
 	if (!XShmQueryExtension(display)) {
 		fprintf(stderr, "No XShm support\n");
-		use_xshm = 0;
+		use_xshm = false;
 	}
 
 	auto screen = DefaultScreen(display);
@@ -101,7 +125,9 @@ int main()
 	auto black_color = BlackPixel(display, screen);
 
 	auto colormap = XCreateColormap(display, DefaultRootWindow(display), vinfo.visual, AllocNone);
-	XSetWindowAttributes attrs = { .background_pixel = black_color, .bit_gravity = StaticGravity, .event_mask = ExposureMask | StructureNotifyMask | ButtonPressMask | KeyPressMask, .colormap = colormap };
+
+	long event_mask = ExposureMask | StructureNotifyMask | ButtonPressMask | KeyPressMask | KeyReleaseMask;
+	XSetWindowAttributes attrs = { .background_pixel = black_color, .bit_gravity = StaticGravity, .event_mask = event_mask, .colormap = colormap };
 	unsigned long attrs_mask = CWColormap | CWBackPixel | CWEventMask | CWBitGravity;
 
 	auto window = XCreateWindow(display, DefaultRootWindow(display), 0, 0, buffer.width, buffer.height, 0, vinfo.depth, InputOutput, vinfo.visual, attrs_mask, &attrs);
@@ -122,25 +148,122 @@ int main()
 
 	auto gc = XCreateGC(display, window, 0, 0);
 
-	XClearWindow(display, window);
-	XMapRaised(display, window);
-
 	auto wm_delete_window_msg = XInternAtom(display, "WM_DELETE_WINDOW", 0);
 	if (!XSetWMProtocols(display, window, &wm_delete_window_msg, 1)) {
 		fprintf(stderr, "Couldn't register WM_DELETE_WINDOW property\n");
 	}
 
+	XMapRaised(display, window);
+
+	const auto max_joy_count = 5; // @Volatile
+	auto joy_fd_count = 0;
+	int joy_fds[max_joy_count];
+	JoyCalibrationData joy_datas[max_joy_count] = {};
+
+	for (int i = 0; i < max_joy_count; i++) {
+		char joy_path[sizeof("/dev/input/js5")]; // @Volatile
+		snprintf(joy_path, sizeof(joy_path), "/dev/input/js%i", i);
+
+		auto joy_fd = joy_fds[i];
+		joy_fd = open(joy_path, O_RDONLY | O_NONBLOCK);
+		if (joy_fd < 0) {
+			fprintf(stderr, "Couldn't open %s\n", joy_path);
+			continue;
+		}
+
+		joy_fd_count++;
+
+		u8 num_axis = 0;
+		u8 num_buttons = 0;
+		ioctl(joy_fd, JSIOCGAXES, &num_axis);
+		ioctl(joy_fd, JSIOCGBUTTONS, &num_buttons);
+
+		char name[1024];
+		if (ioctl(joy_fd, JSIOCGNAME(sizeof(name)), name) < 0) {
+			fprintf(stderr, "Couldn't get %s name\n", joy_path);
+		}
+
+		printf("[JOYSTICK]: %s is connected (Axis: %i, Buttons: %i)\n", name, num_axis, num_buttons);
+
+		auto corr = (js_corr*)malloc(num_axis * sizeof(js_corr));
+		if (ioctl(joy_fd, JSIOCGCORR, corr) < 0) {
+			fprintf(stderr, "Couldn't get %s calibration\n", name);
+		}
+
+		auto data = joy_datas[i];
+		if (corr->type) {
+			data.calibrate = true;
+			data.invert = (corr->coef[2] < 0 && corr->coef[3] < 0);
+			data.center_min = corr->coef[0];
+			data.center_max = corr->coef[1];
+
+			if (data.invert) {
+				corr->coef[2] = -corr->coef[2];
+				corr->coef[3] = -corr->coef[3];
+			}
+
+			// Need to use double and rint(), since calculation doesn't end
+			// up on clean integer positions (i.e. 0.9999 can happen)
+			data.range_min = rint(data.center_min - ((32767.0 * 16384) / corr->coef[2]));
+			data.range_max = rint((32767.0 * 16384) / corr->coef[3] + data.center_max);
+		}
+
+		if (data.calibrate) {
+			printf("[JOYSTICK]: Invert: %i CenterMin: %i CenterMax: %i RangeMin: %i RangeMax: %i\n", data.invert, data.center_min, data.center_max, data.range_min, data.range_max);
+		}
+	}
+
+	auto x_offset = 0;
+	auto y_offset = 0;
+	auto axis0 = 0;
+	auto axis1 = 0;
+
 	auto buffer_size_changed = 0;
 	auto timer_start = get_time_in_ns();
-	auto is_running = 1;
+	auto is_running = true;
 	while (is_running) {
+
+		js_event joy_event;
+
+		for (int i = 0; i < joy_fd_count; i++) {
+			auto joy_fd = joy_fds[i];
+			while (read(joy_fd, &joy_event, sizeof(joy_event)) > 0) {
+				auto data = joy_datas[i];
+				if (joy_event.type & JS_EVENT_BUTTON && joy_event.value) {
+					//printf("[JOYSTICK]: Button %i pressed\n", joy_event.number);
+				} else if (joy_event.type & JS_EVENT_AXIS) {
+					//printf("[JOYSTICK]: Axis %i updated with: %i\n", joy_event.number, joy_event.value);
+					auto pos_threshold = data.range_max / 3;
+					auto neg_threshold = data.range_min / 3;
+					if (joy_event.number == 0) {
+						if (joy_event.value > pos_threshold)
+							axis0 = 1;
+						else if (joy_event.value < neg_threshold)
+							axis0 = -1;
+						else
+							axis0 = 0;
+					} else if (joy_event.number == 1) {
+						if (joy_event.value > pos_threshold)
+							axis1 = 1;
+						else if (joy_event.value < neg_threshold)
+							axis1 = -1;
+						else
+							axis1 = 0;
+					}
+				}
+			}
+		}
+
+		x_offset += axis0;
+		y_offset += axis1;
+
 		XEvent event;
 		while (XPending(display) > 0) {
 
 			XNextEvent(display, &event);
 			switch (event.type) {
 			case DestroyNotify: {
-				is_running = 0;
+				is_running = false;
 				printf("DestroyNotify\n");
 			} break;
 			case ClientMessage: {
@@ -152,6 +275,17 @@ int main()
 			} break;
 			case ButtonPress: {
 				printf("You pressed a button at (%i, %i)\n", event.xbutton.x, event.xbutton.y);
+			} break;
+			case KeyPress: {
+				auto msg = (XKeyPressedEvent*)&event;
+				if (msg->keycode == XKeysymToKeycode(display, XK_W))
+					y_offset -= 5;
+				if (msg->keycode == XKeysymToKeycode(display, XK_A))
+					x_offset -= 5;
+				if (msg->keycode == XKeysymToKeycode(display, XK_S))
+					y_offset += 5;
+				if (msg->keycode == XKeysymToKeycode(display, XK_D))
+					x_offset += 5;
 			} break;
 			case ConfigureNotify: {
 				printf("[MSG]: ConfigureNotify\n");
@@ -180,26 +314,18 @@ int main()
 			buffer_size_changed = 0;
 		}
 
-		static unsigned long long move = 0;
-		move += 4;
-
 		for (int y = 0; y < buffer.height; y++) {
 			auto row = buffer.mem + (y * buffer.pitch());
 			for (int x = 0; x < buffer.width; x++) {
-				auto p = (unsigned int*)(row + (x * buffer.pixel_bytes()));
-				const auto width_flag = 150;
+				auto p = (u32*)(row + (x * buffer.pixel_bytes()));
 
-				const auto new_x = (x + move) % width_flag;
-
-				if (new_x < 50)
-					*p = 0x00ffddff * move;
-				else if (new_x < 150)
-					*p = 0x00ddffff;
+				*p = (u8)(y + y_offset) << 8 | (u8)(x + x_offset);
 			}
 		}
 
 		if (use_xshm) {
 			XShmPutImage(display, window, gc, buffer.ximage, 0, 0, 0, 0, buffer.width, buffer.height, 0);
+			XFlush(display);
 		} else {
 			XPutImage(display, window, gc, buffer.ximage, 0, 0, 0, 0, buffer.width, buffer.height);
 		}
@@ -208,8 +334,10 @@ int main()
 		const auto time_elapsed_ns = timer_end - timer_start;
 		timer_start = timer_end;
 
+#if 0
 		if (time_elapsed_ns > 0)
 			printf("[PERF]: %.2fms %ifps\n", time_elapsed_ns / 1e6, (int)(1e9 / time_elapsed_ns));
+#endif
 	}
 
 	delete_buffer(buffer, display);
