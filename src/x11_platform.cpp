@@ -155,16 +155,16 @@ int main()
 
 	XMapRaised(display, window);
 
-	const auto max_joy_count = 5; // @Volatile
+	const auto max_joy_count = 1; // @Volatile
 	auto joy_fd_count = 0;
 	int joy_fds[max_joy_count];
 	JoyCalibrationData joy_datas[max_joy_count] = {};
 
 	for (int i = 0; i < max_joy_count; i++) {
-		char joy_path[sizeof("/dev/input/js5")]; // @Volatile
+		char joy_path[sizeof("/dev/input/js1")]; // @Volatile
 		snprintf(joy_path, sizeof(joy_path), "/dev/input/js%i", i);
 
-		auto joy_fd = joy_fds[i];
+		auto& joy_fd = joy_fds[i];
 		joy_fd = open(joy_path, O_RDONLY | O_NONBLOCK);
 		if (joy_fd < 0) {
 			fprintf(stderr, "Couldn't open %s\n", joy_path);
@@ -190,7 +190,7 @@ int main()
 			fprintf(stderr, "Couldn't get %s calibration\n", name);
 		}
 
-		auto data = joy_datas[i];
+		auto& data = joy_datas[i];
 		if (corr->type) {
 			data.calibrate = true;
 			data.invert = (corr->coef[2] < 0 && corr->coef[3] < 0);
@@ -206,9 +206,7 @@ int main()
 			// up on clean integer positions (i.e. 0.9999 can happen)
 			data.range_min = rint(data.center_min - ((32767.0 * 16384) / corr->coef[2]));
 			data.range_max = rint((32767.0 * 16384) / corr->coef[3] + data.center_max);
-		}
 
-		if (data.calibrate) {
 			printf("[JOYSTICK]: Invert: %i CenterMin: %i CenterMax: %i RangeMin: %i RangeMax: %i\n", data.invert, data.center_min, data.center_max, data.range_min, data.range_max);
 		}
 	}
