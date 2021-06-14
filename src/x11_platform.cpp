@@ -95,14 +95,66 @@ bool create_buffer(ScreenBuffer& buffer, int width, int height, int pixel_bits, 
 	return 1;
 }
 
-struct JoyCalibrationData {
-	bool calibrate;
-	bool invert;
-	int center_min;
-	int center_max;
+struct Joystick {
 	int range_min;
 	int range_max;
+	int fd;
 };
+
+int get_joysticks(Joystick* joysticks, int max_joy_count)
+{
+	int joystick_count = 0;
+	for (int i = 0; i < max_joy_count; i++) {
+		char joy_path[sizeof("/dev/input/js1")]; // @Volatile_max_joy_count
+		snprintf(joy_path, sizeof(joy_path), "/dev/input/js%i", i);
+
+		auto& joy = joysticks[joystick_count];
+
+		joy.fd = open(joy_path, O_RDONLY | O_NONBLOCK);
+		if (joy.fd < 0) {
+			fprintf(stderr, "Couldn't open %s\n", joy_path);
+			continue;
+		}
+
+		joystick_count++;
+
+		u8 num_axis = 0;
+		u8 num_buttons = 0;
+		ioctl(joy.fd, JSIOCGAXES, &num_axis);
+		ioctl(joy.fd, JSIOCGBUTTONS, &num_buttons);
+
+		char name[1024];
+		if (ioctl(joy.fd, JSIOCGNAME(sizeof(name)), name) < 0) {
+			fprintf(stderr, "Couldn't get %s name\n", joy_path);
+		}
+
+		printf("[JOYSTICK]: %s is connected (Axis: %i, Buttons: %i)\n", name, num_axis, num_buttons);
+
+		auto corr = (js_corr*)malloc(num_axis * sizeof(js_corr));
+		if (ioctl(joy.fd, JSIOCGCORR, corr) < 0) {
+			fprintf(stderr, "Couldn't get %s calibration\n", name);
+		}
+
+		if (corr->type) {
+			auto center_min = corr->coef[0];
+			auto center_max = corr->coef[1];
+
+			auto invert = (corr->coef[2] < 0 && corr->coef[3] < 0);
+			if (invert) {
+				corr->coef[2] = -corr->coef[2];
+				corr->coef[3] = -corr->coef[3];
+			}
+
+			// Need to use double and rint(), since calculation doesn't end
+			// up on clean integer positions (i.e. 0.9999 can happen)
+			joy.range_min = rint(center_min - ((32767.0 * 16384) / corr->coef[2]));
+			joy.range_max = rint((32767.0 * 16384) / corr->coef[3] + center_max);
+
+			printf("[JOYSTICK]: Invert: %i CenterMin: %i CenterMax: %i RangeMin: %i RangeMax: %i\n", invert, center_min, center_max, joy.range_min, joy.range_max);
+		}
+	}
+	return joystick_count;
+}
 
 int main()
 {
@@ -155,61 +207,10 @@ int main()
 
 	XMapRaised(display, window);
 
-	const auto max_joy_count = 1; // @Volatile
-	auto joy_fd_count = 0;
-	int joy_fds[max_joy_count];
-	JoyCalibrationData joy_datas[max_joy_count] = {};
+	const auto max_joy_count = 1; // @Volatile_max_joy_count
+	Joystick joysticks[max_joy_count] = {};
 
-	for (int i = 0; i < max_joy_count; i++) {
-		char joy_path[sizeof("/dev/input/js1")]; // @Volatile
-		snprintf(joy_path, sizeof(joy_path), "/dev/input/js%i", i);
-
-		auto& joy_fd = joy_fds[i];
-		joy_fd = open(joy_path, O_RDONLY | O_NONBLOCK);
-		if (joy_fd < 0) {
-			fprintf(stderr, "Couldn't open %s\n", joy_path);
-			continue;
-		}
-
-		joy_fd_count++;
-
-		u8 num_axis = 0;
-		u8 num_buttons = 0;
-		ioctl(joy_fd, JSIOCGAXES, &num_axis);
-		ioctl(joy_fd, JSIOCGBUTTONS, &num_buttons);
-
-		char name[1024];
-		if (ioctl(joy_fd, JSIOCGNAME(sizeof(name)), name) < 0) {
-			fprintf(stderr, "Couldn't get %s name\n", joy_path);
-		}
-
-		printf("[JOYSTICK]: %s is connected (Axis: %i, Buttons: %i)\n", name, num_axis, num_buttons);
-
-		auto corr = (js_corr*)malloc(num_axis * sizeof(js_corr));
-		if (ioctl(joy_fd, JSIOCGCORR, corr) < 0) {
-			fprintf(stderr, "Couldn't get %s calibration\n", name);
-		}
-
-		auto& data = joy_datas[i];
-		if (corr->type) {
-			data.calibrate = true;
-			data.invert = (corr->coef[2] < 0 && corr->coef[3] < 0);
-			data.center_min = corr->coef[0];
-			data.center_max = corr->coef[1];
-
-			if (data.invert) {
-				corr->coef[2] = -corr->coef[2];
-				corr->coef[3] = -corr->coef[3];
-			}
-
-			// Need to use double and rint(), since calculation doesn't end
-			// up on clean integer positions (i.e. 0.9999 can happen)
-			data.range_min = rint(data.center_min - ((32767.0 * 16384) / corr->coef[2]));
-			data.range_max = rint((32767.0 * 16384) / corr->coef[3] + data.center_max);
-
-			printf("[JOYSTICK]: Invert: %i CenterMin: %i CenterMax: %i RangeMin: %i RangeMax: %i\n", data.invert, data.center_min, data.center_max, data.range_min, data.range_max);
-		}
-	}
+	auto joystick_count = get_joysticks(joysticks, max_joy_count);
 
 	auto x_offset = 0.f;
 	auto y_offset = 0.f;
@@ -223,28 +224,27 @@ int main()
 
 		js_event joy_event;
 
-		for (int i = 0; i < joy_fd_count; i++) {
-			auto joy_fd = joy_fds[i];
-			while (read(joy_fd, &joy_event, sizeof(joy_event)) > 0) {
-				auto data = joy_datas[i];
+		for (int i = 0; i < joystick_count; i++) {
+			auto& joy = joysticks[i];
+			while (read(joy.fd, &joy_event, sizeof(joy_event)) > 0) {
 				if (joy_event.type & JS_EVENT_BUTTON && joy_event.value) {
 					//printf("[JOYSTICK]: Button %i pressed\n", joy_event.number);
 				} else if (joy_event.type & JS_EVENT_AXIS) {
 					//printf("[JOYSTICK]: Axis %i updated with: %i\n", joy_event.number, joy_event.value);
-					auto pos_threshold = data.range_max / 5;
-					auto neg_threshold = data.range_min / 5;
+					auto pos_threshold = joy.range_max / 5;
+					auto neg_threshold = joy.range_min / 5;
 					if (joy_event.number == 0) {
 						if (joy_event.value > pos_threshold)
-							axis0 = (float)joy_event.value / data.range_max;
+							axis0 = (float)joy_event.value / joy.range_max;
 						else if (joy_event.value < neg_threshold)
-							axis0 = -(float)joy_event.value / data.range_min;
+							axis0 = -(float)joy_event.value / joy.range_min;
 						else
 							axis0 = 0;
 					} else if (joy_event.number == 1) {
 						if (joy_event.value > pos_threshold)
-							axis1 = (float)joy_event.value / data.range_max;
+							axis1 = (float)joy_event.value / joy.range_max;
 						else if (joy_event.value < neg_threshold)
-							axis1 = -(float)joy_event.value / data.range_min;
+							axis1 = -(float)joy_event.value / joy.range_min;
 						else
 							axis1 = 0;
 					}
