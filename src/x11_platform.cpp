@@ -269,7 +269,7 @@ int main()
 	auto left = 0;
 	auto right = 0;
 
-	XKeyEvent prev_key_release_event = {};
+	XKeyEvent prev_key_event = {};
 	bool key_is_pressed = false;
 
 	auto buffer_size_changed = 0;
@@ -373,13 +373,11 @@ int main()
 				else if (key_event.type == KeyRelease)
 					printf("%i was Released at %ld\n", key_event.keycode, key_event.time);
 #endif
-				auto was_pressed = key_event.type == KeyRelease || (prev_key_release_event.time == key_event.time && prev_key_release_event.keycode == key_event.keycode);
+				auto was_pressed = key_event.type == KeyRelease || (prev_key_event.type == KeyRelease && prev_key_event.time == key_event.time && prev_key_event.keycode == key_event.keycode);
 				auto is_pressed = key_event.type == KeyPress || get_keycode_state(display, key_event.keycode);
-				if (key_event.type == KeyRelease) {
-					prev_key_release_event = key_event;
-				}
+				prev_key_event = key_event;
 
-				if (!(was_pressed && is_pressed)) {
+				if (was_pressed != is_pressed) {
 					if (key_event.keycode == XKeysymToKeycode(display, XK_W)) {
 						up = is_pressed;
 					}
