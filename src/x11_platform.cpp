@@ -158,6 +158,13 @@ bool get_joystick(Joystick& joy, const char* const path)
 	return result;
 }
 
+bool get_keycode_state(Display* display, uint keycode)
+{
+	char keys[32];
+	XQueryKeymap(display, keys);
+	return (keys[keycode / 8] & (0x1 << (keycode % 8)));
+}
+
 bool get_joystick_by_index(Joystick& joy, int i)
 {
 	char joy_path[sizeof("/dev/input/js1")]; // @Volatile_max_joy_count
@@ -257,6 +264,13 @@ int main()
 
 	auto x_offset = 0.f;
 	auto y_offset = 0.f;
+	auto up = 0;
+	auto down = 0;
+	auto left = 0;
+	auto right = 0;
+
+	XKeyEvent prev_key_release_event = {};
+	bool key_is_pressed = false;
 
 	auto buffer_size_changed = 0;
 	auto timer_start = get_time_in_ns();
@@ -330,14 +344,9 @@ int main()
 			}
 		}
 
-		auto& joy = joysticks[0];
-
-		x_offset += joy.axis0 * 1.5;
-		y_offset += joy.axis1 * 1.5;
-
-		XEvent event;
 		while (XPending(display) > 0) {
 
+			XEvent event;
 			XNextEvent(display, &event);
 			switch (event.type) {
 			case DestroyNotify: {
@@ -354,19 +363,40 @@ int main()
 			case ButtonPress: {
 				printf("You pressed a button at (%i, %i)\n", event.xbutton.x, event.xbutton.y);
 			} break;
+			case KeyRelease: // fall through
 			case KeyPress: {
-				auto msg = (XKeyPressedEvent*)&event;
-				if (msg->keycode == XKeysymToKeycode(display, XK_W))
-					y_offset -= 5;
-				if (msg->keycode == XKeysymToKeycode(display, XK_A))
-					x_offset -= 5;
-				if (msg->keycode == XKeysymToKeycode(display, XK_S))
-					y_offset += 5;
-				if (msg->keycode == XKeysymToKeycode(display, XK_D))
-					x_offset += 5;
+				auto& key_event = *(XKeyEvent*)&event;
+
+#if 0
+				if (key_event.type == KeyPress)
+					printf("%i was Pressed at %ld\n", key_event.keycode, key_event.time);
+				else if (key_event.type == KeyRelease)
+					printf("%i was Released at %ld\n", key_event.keycode, key_event.time);
+#endif
+				auto was_pressed = key_event.type == KeyRelease || (prev_key_release_event.time == key_event.time && prev_key_release_event.keycode == key_event.keycode);
+				auto is_pressed = key_event.type == KeyPress || get_keycode_state(display, key_event.keycode);
+				if (key_event.type == KeyRelease) {
+					prev_key_release_event = key_event;
+				}
+
+				if (!(was_pressed && is_pressed)) {
+					if (key_event.keycode == XKeysymToKeycode(display, XK_W)) {
+						up = is_pressed;
+					}
+					if (key_event.keycode == XKeysymToKeycode(display, XK_A)) {
+						left = is_pressed;
+					}
+					if (key_event.keycode == XKeysymToKeycode(display, XK_S)) {
+						down = is_pressed;
+					}
+					if (key_event.keycode == XKeysymToKeycode(display, XK_D)) {
+						right = is_pressed;
+					}
+				}
+
 			} break;
 			case ConfigureNotify: {
-				printf("[MSG]: ConfigureNotify\n");
+				//printf("[MSG]: ConfigureNotify\n");
 				auto msg = (XConfigureEvent*)&event;
 
 				if (msg->width != buffer.width) {
@@ -381,6 +411,11 @@ int main()
 			} break;
 			}
 		}
+
+		auto& joy = joysticks[0];
+
+		x_offset += joy.axis0 * 1.5 + (right - left) * 1.5;
+		y_offset += joy.axis1 * 1.5 + (down - up) * 1.5;
 
 		if (buffer_size_changed) {
 			printf("BufferSizeChanged\n");
