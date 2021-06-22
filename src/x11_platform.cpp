@@ -6,8 +6,12 @@
 #include <linux/joystick.h>
 #include <malloc.h>
 #include <math.h>
+#include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/inotify.h>
 #include <sys/ipc.h>
 #include <sys/shm.h>
 #include <sys/stat.h>
@@ -25,6 +29,11 @@ typedef int32_t i32;
 typedef int64_t i64;
 
 #define countof(x) (sizeof(x) / sizeof((x)[0]))
+
+#define MAX_EVENTS 1024
+#define LEN_NAME 16
+#define EVENT_SIZE sizeof(inotify_event)
+#define BUF_LEN (MAX_EVENTS * (EVENT_SIZE + LEN_NAME))
 
 auto use_xshm = true;
 
@@ -99,65 +108,87 @@ struct Joystick {
 	int range_min;
 	int range_max;
 	int fd;
+	float axis0;
+	float axis1;
 };
 
-int get_joysticks(Joystick* joysticks, int max_joy_count)
+bool get_joystick(Joystick& joy, const char* const path)
 {
-	int joystick_count = 0;
-	for (int i = 0; i < max_joy_count; i++) {
-		char joy_path[sizeof("/dev/input/js1")]; // @Volatile_max_joy_count
-		snprintf(joy_path, sizeof(joy_path), "/dev/input/js%i", i);
-
-		auto& joy = joysticks[joystick_count];
-
-		joy.fd = open(joy_path, O_RDONLY | O_NONBLOCK);
-		if (joy.fd < 0) {
-			fprintf(stderr, "Couldn't open %s\n", joy_path);
-			continue;
-		}
-
-		joystick_count++;
-
-		u8 num_axis = 0;
-		u8 num_buttons = 0;
-		ioctl(joy.fd, JSIOCGAXES, &num_axis);
-		ioctl(joy.fd, JSIOCGBUTTONS, &num_buttons);
-
-		char name[1024];
-		if (ioctl(joy.fd, JSIOCGNAME(sizeof(name)), name) < 0) {
-			fprintf(stderr, "Couldn't get %s name\n", joy_path);
-		}
-
-		printf("[JOYSTICK]: %s is connected (Axis: %i, Buttons: %i)\n", name, num_axis, num_buttons);
-
-		auto corr = (js_corr*)malloc(num_axis * sizeof(js_corr));
-		if (ioctl(joy.fd, JSIOCGCORR, corr) < 0) {
-			fprintf(stderr, "Couldn't get %s calibration\n", name);
-		}
-
-		if (corr->type) {
-			auto center_min = corr->coef[0];
-			auto center_max = corr->coef[1];
-
-			auto invert = (corr->coef[2] < 0 && corr->coef[3] < 0);
-			if (invert) {
-				corr->coef[2] = -corr->coef[2];
-				corr->coef[3] = -corr->coef[3];
-			}
-
-			// Need to use double and rint(), since calculation doesn't end
-			// up on clean integer positions (i.e. 0.9999 can happen)
-			joy.range_min = rint(center_min - ((32767.0 * 16384) / corr->coef[2]));
-			joy.range_max = rint((32767.0 * 16384) / corr->coef[3] + center_max);
-
-			printf("[JOYSTICK]: Invert: %i CenterMin: %i CenterMax: %i RangeMin: %i RangeMax: %i\n", invert, center_min, center_max, joy.range_min, joy.range_max);
-		}
+	bool result = false;
+	joy.fd = open(path, O_RDONLY | O_NONBLOCK);
+	if (joy.fd < 0) {
+		fprintf(stderr, "Couldn't open %s\n", path);
+		return result;
 	}
-	return joystick_count;
+
+	u8 num_axis = 0;
+	u8 num_buttons = 0;
+	ioctl(joy.fd, JSIOCGAXES, &num_axis);
+	ioctl(joy.fd, JSIOCGBUTTONS, &num_buttons);
+
+	char name[1024];
+	ioctl(joy.fd, JSIOCGNAME(sizeof(name)), name);
+
+	printf("[JOYSTICK]: %s is connected (Axis: %i, Buttons: %i)\n", name, num_axis, num_buttons);
+
+	auto corr = (js_corr*)malloc(num_axis * sizeof(js_corr));
+	ioctl(joy.fd, JSIOCGCORR, corr);
+
+	if (corr && corr->type) {
+		auto center_min = corr->coef[0];
+		auto center_max = corr->coef[1];
+
+		auto invert = (corr->coef[2] < 0 && corr->coef[3] < 0);
+		if (invert) {
+			corr->coef[2] = -corr->coef[2];
+			corr->coef[3] = -corr->coef[3];
+		}
+
+		// Need to use double and rint(), since calculation doesn't end
+		// up on clean integer positions (i.e. 0.9999 can happen)
+		joy.range_min = rint(center_min - ((32767.0 * 16384) / corr->coef[2]));
+		joy.range_max = rint((32767.0 * 16384) / corr->coef[3] + center_max);
+
+		printf("[JOYSTICK]: Invert: %i CenterMin: %i CenterMax: %i RangeMin: %i RangeMax: %i\n", invert, center_min, center_max, joy.range_min, joy.range_max);
+
+		result = true;
+	}
+
+	free(corr);
+	return result;
+}
+
+bool get_joystick_by_index(Joystick& joy, int i)
+{
+	char joy_path[sizeof("/dev/input/js1")]; // @Volatile_max_joy_count
+	snprintf(joy_path, sizeof(joy_path), "/dev/input/js%i", i);
+
+	if (get_joystick(joy, joy_path))
+		return true;
+
+	return false;
+}
+
+void get_joysticks(Joystick* const joysticks, int max_joy_count)
+{
+	for (int i = 0; i < max_joy_count; i++) {
+		auto& joy = joysticks[i];
+		get_joystick_by_index(joy, i);
+	}
+}
+
+static int fd, wd;
+static bool is_running;
+
+void sig_handler(int sig)
+{
+	is_running = false;
 }
 
 int main()
 {
+	signal(SIGINT, sig_handler);
+
 	auto display = XOpenDisplay(0);
 
 	if (!XShmQueryExtension(display)) {
@@ -210,23 +241,70 @@ int main()
 	const auto max_joy_count = 1; // @Volatile_max_joy_count
 	Joystick joysticks[max_joy_count] = {};
 
-	auto joystick_count = get_joysticks(joysticks, max_joy_count);
+	get_joysticks(joysticks, max_joy_count);
+
+	{
+		fd = inotify_init();
+		if (fcntl(fd, F_SETFL, O_NONBLOCK) < 0) {
+			fprintf(stderr, "Failed to fctnl\n");
+		}
+
+		auto path = "/dev/input";
+		wd = inotify_add_watch(fd, path, IN_CREATE | IN_DELETE);
+		if (wd != -1)
+			printf("[INOTIFY]: Watching %s\n", path);
+	}
 
 	auto x_offset = 0.f;
 	auto y_offset = 0.f;
-	auto axis0 = 0.f;
-	auto axis1 = 0.f;
 
 	auto buffer_size_changed = 0;
 	auto timer_start = get_time_in_ns();
-	auto is_running = true;
+	is_running = true;
 	while (is_running) {
 
-		js_event joy_event;
+		char ibuffer[BUF_LEN];
 
-		for (int i = 0; i < joystick_count; i++) {
+		auto length = read(fd, ibuffer, BUF_LEN);
+
+		for (int i = 0; i < length;) {
+
+			auto event = (inotify_event*)&ibuffer[i];
+
+			if (event->len) {
+				if ((event_mask & IN_ISDIR) == 0 && event->mask & (IN_CREATE | IN_DELETE)) {
+					const char pattern[] = "js";
+					auto pattern_len = sizeof(pattern) - 1;
+					if (strncmp(event->name, pattern, pattern_len) == 0) {
+						sleep(1); // @Hack
+						if (event->mask & IN_CREATE) {
+							printf("[INOTIFY]: %s was created\n", event->name);
+							auto joy_index = strtol(event->name, 0, 10);
+
+							if (joy_index < max_joy_count) {
+								auto& joy = joysticks[joy_index];
+								get_joystick_by_index(joy, joy_index);
+							}
+
+						} else if (event->mask & IN_DELETE) {
+							printf("[INOTIFY]: %s was deleted\n", event->name);
+							auto joy_index = strtol(event->name, 0, 10);
+
+							if (joy_index < max_joy_count) {
+								joysticks[joy_index] = {};
+							}
+						}
+					}
+				}
+			}
+
+			i += EVENT_SIZE + event->len;
+		}
+
+		for (int i = 0; i < max_joy_count; i++) {
 			auto& joy = joysticks[i];
-			while (read(joy.fd, &joy_event, sizeof(joy_event)) > 0) {
+			js_event joy_event;
+			while (joy.fd && read(joy.fd, &joy_event, sizeof(joy_event)) > 0) {
 				if (joy_event.type & JS_EVENT_BUTTON && joy_event.value) {
 					//printf("[JOYSTICK]: Button %i pressed\n", joy_event.number);
 				} else if (joy_event.type & JS_EVENT_AXIS) {
@@ -235,25 +313,27 @@ int main()
 					auto neg_threshold = joy.range_min / 5;
 					if (joy_event.number == 0) {
 						if (joy_event.value > pos_threshold)
-							axis0 = (float)joy_event.value / joy.range_max;
+							joy.axis0 = (float)joy_event.value / joy.range_max;
 						else if (joy_event.value < neg_threshold)
-							axis0 = -(float)joy_event.value / joy.range_min;
+							joy.axis0 = -(float)joy_event.value / joy.range_min;
 						else
-							axis0 = 0;
+							joy.axis0 = 0;
 					} else if (joy_event.number == 1) {
 						if (joy_event.value > pos_threshold)
-							axis1 = (float)joy_event.value / joy.range_max;
+							joy.axis1 = (float)joy_event.value / joy.range_max;
 						else if (joy_event.value < neg_threshold)
-							axis1 = -(float)joy_event.value / joy.range_min;
+							joy.axis1 = -(float)joy_event.value / joy.range_min;
 						else
-							axis1 = 0;
+							joy.axis1 = 0;
 					}
 				}
 			}
 		}
 
-		x_offset += axis0 * 1.5;
-		y_offset += axis1 * 1.5;
+		auto& joy = joysticks[0];
+
+		x_offset += joy.axis0 * 1.5;
+		y_offset += joy.axis1 * 1.5;
 
 		XEvent event;
 		while (XPending(display) > 0) {
@@ -267,7 +347,7 @@ int main()
 			case ClientMessage: {
 				auto msg = (XClientMessageEvent*)&event;
 				if (msg->data.l[0] == wm_delete_window_msg) {
-					is_running = 0;
+					is_running = false;
 					printf("[MSG]: ClientMessage\n");
 				}
 			} break;
@@ -339,6 +419,8 @@ int main()
 	}
 
 	delete_buffer(buffer, display);
+	inotify_rm_watch(fd, wd);
+	close(fd);
 
 	printf("ola eu sou o edgar\n");
 }
