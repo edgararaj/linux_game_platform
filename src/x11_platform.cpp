@@ -1,7 +1,7 @@
-#include "optional.cpp"
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 #include <X11/extensions/XShm.h>
+#include <dlfcn.h>
 #include <fcntl.h>
 #include <linux/joystick.h>
 #include <malloc.h>
@@ -18,6 +18,9 @@
 #include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
+
+#include "alsa.cpp"
+#include "optional.cpp"
 
 typedef uint8_t u8;
 typedef uint16_t u16;
@@ -250,6 +253,10 @@ int main()
 
 	get_joysticks(joysticks, max_joy_count);
 
+	if (!init_alsa()) {
+		printf("[ALSA]: Failed to init alsa\n");
+	}
+
 	{
 		fd = inotify_init();
 		if (fcntl(fd, F_SETFL, O_NONBLOCK) < 0) {
@@ -445,8 +452,11 @@ int main()
 		const auto time_elapsed_ns = timer_end - timer_start;
 		timer_start = timer_end;
 
-#if 0
-		if (time_elapsed_ns > 0)
+		static int fps_display_timer = 0;
+		fps_display_timer++;
+
+#if 1
+		if (time_elapsed_ns > 0 && fps_display_timer % 100 == 0)
 			printf("[PERF]: %.2fms %ifps\n", time_elapsed_ns / 1e6, (int)(1e9 / time_elapsed_ns));
 #endif
 	}
@@ -455,5 +465,5 @@ int main()
 	inotify_rm_watch(fd, wd);
 	close(fd);
 
-	printf("ola eu sou o edgar\n");
+	printf("END OF THE PROGRAM!\n");
 }

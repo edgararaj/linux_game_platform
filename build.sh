@@ -15,5 +15,5 @@ fi
 mkdir "$build_dir"
 
 pushd "$build_dir" > /dev/null
-gcc -ggdb -std=c++20 "$src_dir/x11_platform.cpp" -lX11 -lXext -lm
+gcc -ggdb -std=c++20 "$src_dir/x11_platform.cpp" -lX11 -lXext -lm -ldl
 popd > /dev/null
