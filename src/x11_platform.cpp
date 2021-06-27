@@ -7,7 +7,6 @@
 #include <malloc.h>
 #include <math.h>
 #include <signal.h>
-#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,18 +19,9 @@
 #include <unistd.h>
 
 #include "alsa.cpp"
-#include "optional.cpp"
-
-typedef uint8_t u8;
-typedef uint16_t u16;
-typedef uint32_t u32;
-typedef uint64_t u64;
-typedef int8_t i8;
-typedef int16_t i16;
-typedef int32_t i32;
-typedef int64_t i64;
-
-#define countof(x) (sizeof(x) / sizeof((x)[0]))
+#include "optional.h"
+#include "types.h"
+#include "x11_platform.h"
 
 #define MAX_EVENTS 1024
 #define LEN_NAME 16
@@ -52,7 +42,7 @@ struct ScreenBuffer {
 	int width;
 	int height;
 	int pixel_bits;
-	char* mem;
+	char* buffer;
 	XImage* ximage;
 	XShmSegmentInfo shminfo;
 	int pixel_bytes() const
@@ -63,7 +53,7 @@ struct ScreenBuffer {
 	int pitch() const { return width * pixel_bytes(); }
 };
 
-void delete_buffer(ScreenBuffer& buffer, Display* display)
+void delete_screen_buffer(ScreenBuffer& buffer, Display* display)
 {
 	if (use_xshm) {
 		XShmDetach(display, &buffer.shminfo);
@@ -72,7 +62,7 @@ void delete_buffer(ScreenBuffer& buffer, Display* display)
 	XDestroyImage(buffer.ximage);
 }
 
-bool create_buffer(ScreenBuffer& buffer, int width, int height, int pixel_bits, const XVisualInfo& vinfo, Display* display)
+bool create_screen_buffer(ScreenBuffer& buffer, int width, int height, int pixel_bits, const XVisualInfo& vinfo, Display* display)
 {
 	buffer.width = width;
 	buffer.height = height;
@@ -82,7 +72,7 @@ bool create_buffer(ScreenBuffer& buffer, int width, int height, int pixel_bits, 
 		// TODO: Cant create a new shared buffer when resized, it crashes the app, maybe allocate a large one and use the portion needed
 		buffer.ximage = XShmCreateImage(display, vinfo.visual, vinfo.depth, ZPixmap, 0, &buffer.shminfo, width, height);
 		buffer.shminfo.shmid = shmget(IPC_PRIVATE, buffer.ximage->bytes_per_line * buffer.ximage->height, IPC_CREAT | 0777);
-		buffer.mem = buffer.shminfo.shmaddr = buffer.ximage->data = (char*)shmat(buffer.shminfo.shmid, 0, 0);
+		buffer.buffer = buffer.shminfo.shmaddr = buffer.ximage->data = (char*)shmat(buffer.shminfo.shmid, 0, 0);
 		buffer.shminfo.readOnly = 1;
 
 		if (!XShmAttach(display, &buffer.shminfo)) {
@@ -95,13 +85,13 @@ bool create_buffer(ScreenBuffer& buffer, int width, int height, int pixel_bits, 
 		printf("[MIT-SHM]: Shared memory KID=%d, at=%p\n", buffer.shminfo.shmid, buffer.shminfo.shmaddr);
 
 	} else {
-		buffer.mem = (char*)malloc(buffer.byte_size());
-		if (!buffer.mem) {
+		buffer.buffer = (char*)malloc(buffer.byte_size());
+		if (!buffer.buffer) {
 			fprintf(stderr, "Failed to malloc\n");
 			return 0;
 		}
 
-		buffer.ximage = XCreateImage(display, vinfo.visual, vinfo.depth, ZPixmap, 0, buffer.mem, width, height, pixel_bits, 0);
+		buffer.ximage = XCreateImage(display, vinfo.visual, vinfo.depth, ZPixmap, 0, buffer.buffer, width, height, pixel_bits, 0);
 	}
 
 	return 1;
@@ -212,7 +202,7 @@ int main()
 	XMatchVisualInfo(display, screen, 24, TrueColor, &vinfo);
 
 	ScreenBuffer buffer = {};
-	if (!create_buffer(buffer, 1280, 720, 32, vinfo, display))
+	if (!create_screen_buffer(buffer, 1280, 720, 32, vinfo, display))
 		return 1;
 
 	auto black_color = BlackPixel(display, screen);
@@ -226,7 +216,7 @@ int main()
 	auto window = XCreateWindow(display, DefaultRootWindow(display), 0, 0, buffer.width, buffer.height, 0, vinfo.depth, InputOutput, vinfo.visual, attrs_mask, &attrs);
 	if (!window) {
 		fprintf(stderr, "Failed to XCreateWindow\n");
-		delete_buffer(buffer, display);
+		delete_screen_buffer(buffer, display);
 		return 1;
 	}
 
@@ -253,9 +243,35 @@ int main()
 
 	get_joysticks(joysticks, max_joy_count);
 
-	if (!init_alsa()) {
+	SoundBuffer sound_buffer = { .frame_rate = 48000, .channel_num = 2, .length = 2 };
+
+	auto dl_name = "libasound.so";
+	auto alsa_dl = dlopen(dl_name, RTLD_LAZY);
+	if (!alsa_dl) {
+		printf("[ALSA] Couldn't load %s\n", dl_name);
+		return 0;
+	}
+
+	if (!init_alsa(sound_buffer, alsa_dl)) {
 		printf("[ALSA]: Failed to init alsa\n");
 	}
+
+	auto dy_snd_pcm_writei = (snd_pcm_writei_fun*)dlsym(alsa_dl, "snd_pcm_writei");
+	if (!dy_snd_pcm_writei) {
+		printf("[ALSA]: Failed to init alsa\n");
+	}
+
+	auto dy_snd_pcm_recover = (snd_pcm_recover_fun*)dlsym(alsa_dl, "snd_pcm_recover");
+	if (!dy_snd_pcm_recover) {
+		printf("[ALSA]: Failed to init alsa\n");
+	}
+
+	auto dy_snd_pcm_avail_delay = (snd_pcm_avail_delay_fun*)dlsym(alsa_dl, "snd_pcm_avail_delay");
+	if (!dy_snd_pcm_avail_delay) {
+		printf("[ALSA]: Failed to init alsa\n");
+	}
+
+	sound_buffer.sample_buffer = (i16*)calloc(sound_buffer.byte_size(), 1); // @Volatile_bit_depth
 
 	{
 		fd = inotify_init();
@@ -268,6 +284,12 @@ int main()
 		if (wd != -1)
 			printf("[INOTIFY]: Watching %s\n", path);
 	}
+
+	auto hz = 256;
+	auto sqr_wave_period = sound_buffer.frame_rate / hz;
+	auto sqr_wave_counter = 0;
+	//u32 sample_index = 0;
+	auto frames_to_write = sound_buffer.frame_rate / 200;
 
 	auto x_offset = 0.f;
 	auto y_offset = 0.f;
@@ -361,8 +383,8 @@ int main()
 				printf("DestroyNotify\n");
 			} break;
 			case ClientMessage: {
-				auto msg = (XClientMessageEvent*)&event;
-				if (msg->data.l[0] == wm_delete_window_msg) {
+				auto& msg = *(XClientMessageEvent*)&event;
+				if (msg.data.l[0] == wm_delete_window_msg) {
 					is_running = false;
 					printf("[MSG]: ClientMessage\n");
 				}
@@ -424,21 +446,50 @@ int main()
 
 		if (buffer_size_changed) {
 			printf("BufferSizeChanged\n");
-			delete_buffer(buffer, display);
-			if (!create_buffer(buffer, buffer.width, buffer.height, 32, vinfo, display)) {
-				delete_buffer(buffer, display);
+			delete_screen_buffer(buffer, display);
+			if (!create_screen_buffer(buffer, buffer.width, buffer.height, 32, vinfo, display)) {
+				delete_screen_buffer(buffer, display);
 				return 1;
 			}
 			buffer_size_changed = 0;
 		}
 
 		for (int y = 0; y < buffer.height; y++) {
-			auto row = buffer.mem + (y * buffer.pitch());
+			auto row = buffer.buffer + (y * buffer.pitch());
 			for (int x = 0; x < buffer.width; x++) {
 				auto p = (u32*)(row + (x * buffer.pixel_bytes()));
 
 				*p = (u8)(y + y_offset) << 8 | (u8)(x + x_offset);
 			}
+		}
+
+		for (int i = 0; i < frames_to_write; i++) {
+			auto sample_index = i * sound_buffer.channel_num;
+			if (!sqr_wave_counter) {
+				sqr_wave_counter = sqr_wave_period;
+			}
+			i16 value = (sqr_wave_counter > (sqr_wave_period / 2) ? 500 : -500);
+			sound_buffer.sample_buffer[sample_index] = value;
+			sound_buffer.sample_buffer[sample_index + 1] = value;
+			sqr_wave_counter--;
+		}
+
+		snd_pcm_sframes_t delay, avail;
+		dy_snd_pcm_avail_delay(sound_buffer.handle, &avail, &delay);
+		printf("[ALSA]: Frames before write: %ld, Frame delay: %ld\n", sound_buffer.frame_count() - avail, delay);
+
+		auto frames_written = dy_snd_pcm_writei(sound_buffer.handle, sound_buffer.sample_buffer, frames_to_write);
+		if (frames_written < 0) {
+			frames_written = dy_snd_pcm_recover(sound_buffer.handle, frames_written, 0);
+		}
+
+		if (frames_written != frames_to_write) {
+			printf("[ALSA]: Only wrote %ld frames (expected %d frames)\n", frames_written, frames_to_write);
+		}
+
+		if (frames_written > 0) {
+			dy_snd_pcm_avail_delay(sound_buffer.handle, &avail, &delay);
+			printf("[ALSA]: Frames after write: %ld (+%ld), Frame delay: %ld\n", sound_buffer.frame_count() - avail + frames_written, frames_written, delay);
 		}
 
 		if (use_xshm) {
@@ -461,7 +512,7 @@ int main()
 #endif
 	}
 
-	delete_buffer(buffer, display);
+	delete_screen_buffer(buffer, display);
 	inotify_rm_watch(fd, wd);
 	close(fd);
 

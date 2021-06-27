@@ -1,4 +1,4 @@
-#include <alsa/asoundlib.h>
+#include "x11_platform.h"
 #include <dlfcn.h>
 #include <fcntl.h>
 
@@ -50,125 +50,63 @@ typedef SND_PCM_HW_PARAMS_GET_PERIOD_SIZE(snd_pcm_hw_params_get_period_size_fun)
 	int name(snd_pcm_t* pcm, snd_output_t* out)
 typedef SND_PCM_DUMP(snd_pcm_dump_fun);
 
-bool init_alsa()
+#define SND_PCM_WRITEI(name) \
+	snd_pcm_sframes_t name(snd_pcm_t* pcm, const void* buffer, snd_pcm_uframes_t size);
+typedef SND_PCM_WRITEI(snd_pcm_writei_fun);
+
+#define SND_PCM_RECOVER(name) \
+	int name(snd_pcm_t* pcm, int err, int silent);
+typedef SND_PCM_RECOVER(snd_pcm_recover_fun);
+
+#define SND_PCM_PREPARE(name) \
+	int name(snd_pcm_t* pcm);
+typedef SND_PCM_PREPARE(snd_pcm_prepare_fun);
+
+#define SND_PCM_AVAIL_DELAY(name) \
+	int name(snd_pcm_t* pcm, snd_pcm_sframes_t* availp, snd_pcm_sframes_t* delayp);
+typedef SND_PCM_AVAIL_DELAY(snd_pcm_avail_delay_fun);
+
+bool init_alsa(SoundBuffer& sound_buffer, void* alsa_dl)
 {
-	auto dl_name = "libasound.so";
-	auto alsa_dl = dlopen(dl_name, RTLD_LAZY);
-	if (!alsa_dl) {
-		printf("[ALSA] Couldn't load %s\n", dl_name);
-		return false;
-	}
-
 	int error;
-	snd_output_t* log;
-	auto dy_snd_output_stdio_attach = (snd_output_stdio_attach_fun*)dlsym(alsa_dl, "snd_output_stdio_attach");
-	if (dy_snd_output_stdio_attach) {
-		error = dy_snd_output_stdio_attach(&log, stderr, 0);
-		if (error < 0) {
-			printf("[ALSA] snd_output_stdio_attach failed\n");
-			return false;
-		}
+
+#define ALSA_CALL(name, ...)                             \
+	auto dy_##name = (name##_fun*)dlsym(alsa_dl, #name); \
+	if (!dy_##name)                                      \
+		return false;                                    \
+	error = dy_##name(__VA_ARGS__);                      \
+	if (error < 0) {                                     \
+		printf("[ALSA]: " #name "failed\n");             \
+		return false;                                    \
 	}
 
-	snd_pcm_t* handle;
-	auto dy_snd_pcm_open = (snd_pcm_open_fun*)dlsym(alsa_dl, "snd_pcm_open");
-	if (dy_snd_output_stdio_attach) {
-		error = dy_snd_pcm_open(&handle, "default", SND_PCM_STREAM_PLAYBACK, 0);
-		if (error < 0) {
-			printf("[ALSA] snd_pcm_open failed\n");
-			return false;
-		}
-	}
+	snd_output_t* log;
+	ALSA_CALL(snd_output_stdio_attach, &log, stderr, 0);
+
+	ALSA_CALL(snd_pcm_open, &sound_buffer.handle, "default", SND_PCM_STREAM_PLAYBACK, 0)
 
 	snd_pcm_hw_params_t* hw_params;
-	auto dy_snd_pcm_hw_params_sizeof_fun = (snd_pcm_hw_params_sizeof_fun*)dlsym(alsa_dl, "snd_pcm_hw_params_sizeof");
-	if (dy_snd_pcm_hw_params_sizeof_fun) {
-#define snd_pcm_hw_params_sizeof dy_snd_pcm_hw_params_sizeof_fun
-		snd_pcm_hw_params_alloca(&hw_params);
+	auto dy_snd_pcm_hw_params_sizeof = (snd_pcm_hw_params_sizeof_fun*)dlsym(alsa_dl, "snd_pcm_hw_params_sizeof");
+	if (!dy_snd_pcm_hw_params_sizeof)
+		return false;
+#define snd_pcm_hw_params_sizeof dy_snd_pcm_hw_params_sizeof
+	snd_pcm_hw_params_alloca(&hw_params);
 #undef snd_pcm_hw_params_sizeof
-	}
 
-	auto dy_snd_pcm_hw_params_any = (snd_pcm_hw_params_any_fun*)dlsym(alsa_dl, "snd_pcm_hw_params_any");
-	if (dy_snd_pcm_hw_params_any) {
-		error = dy_snd_pcm_hw_params_any(handle, hw_params);
-		if (error < 0) {
-			printf("[ALSA] snd_pcm_hw_params_any failed\n");
-			return false;
-		}
-	}
+	ALSA_CALL(snd_pcm_hw_params_any, sound_buffer.handle, hw_params);
+	ALSA_CALL(snd_pcm_hw_params_set_access, sound_buffer.handle, hw_params, SND_PCM_ACCESS_RW_INTERLEAVED);
+	ALSA_CALL(snd_pcm_hw_params_set_format, sound_buffer.handle, hw_params, SND_PCM_FORMAT_S16_LE); // @Volatile_bit_depth
+	ALSA_CALL(snd_pcm_hw_params_set_channels, sound_buffer.handle, hw_params, sound_buffer.channel_num);
+	ALSA_CALL(snd_pcm_hw_params_set_rate, sound_buffer.handle, hw_params, sound_buffer.frame_rate, 0);
+	ALSA_CALL(snd_pcm_hw_params_set_buffer_size, sound_buffer.handle, hw_params, sound_buffer.frame_count());
+	ALSA_CALL(snd_pcm_hw_params, sound_buffer.handle, hw_params);
+	//ALSA_CALL(snd_pcm_prepare, sound_buffer.handle);
 
-	auto dy_snd_pcm_hw_params_set_access = (snd_pcm_hw_params_set_access_fun*)dlsym(alsa_dl, "snd_pcm_hw_params_set_access");
-	if (dy_snd_pcm_hw_params_set_access) {
-		error = dy_snd_pcm_hw_params_set_access(handle, hw_params, SND_PCM_ACCESS_RW_INTERLEAVED);
-		if (error < 0) {
-			printf("[ALSA] snd_pcm_hw_params_set_access failed\n");
-			return false;
-		}
-	}
+	//snd_pcm_uframes_t period;
+	//ALSA_CALL(snd_pcm_hw_params_get_period_size, hw_params, &period, 0);
+	ALSA_CALL(snd_pcm_dump, sound_buffer.handle, log);
 
-	auto dy_snd_pcm_hw_params_set_format = (snd_pcm_hw_params_set_format_fun*)dlsym(alsa_dl, "snd_pcm_hw_params_set_format");
-	if (dy_snd_pcm_hw_params_set_format) {
-		error = dy_snd_pcm_hw_params_set_format(handle, hw_params, SND_PCM_FORMAT_S16_LE);
-		if (error < 0) {
-			printf("[ALSA] snd_pcm_hw_params_set_format failed\n");
-			return false;
-		}
-	}
-
-	auto dy_snd_pcm_hw_params_set_channels = (snd_pcm_hw_params_set_channels_fun*)dlsym(alsa_dl, "snd_pcm_hw_params_set_channels");
-	if (dy_snd_pcm_hw_params_set_channels) {
-		error = dy_snd_pcm_hw_params_set_channels(handle, hw_params, 2);
-		if (error < 0) {
-			printf("[ALSA] snd_pcm_hw_params_set_channels failed\n");
-			return false;
-		}
-	}
-
-	auto dy_snd_pcm_hw_params_set_rate = (snd_pcm_hw_params_set_rate_fun*)dlsym(alsa_dl, "snd_pcm_hw_params_set_rate");
-	if (dy_snd_pcm_hw_params_set_rate) {
-		error = dy_snd_pcm_hw_params_set_rate(handle, hw_params, 48000, 0);
-		if (error < 0) {
-			printf("[ALSA] snd_pcm_hw_params_set_rate failed\n");
-			return false;
-		}
-	}
-
-	auto dy_snd_pcm_hw_params_set_buffer_size = (snd_pcm_hw_params_set_buffer_size_fun*)dlsym(alsa_dl, "snd_pcm_hw_params_set_buffer_size");
-	if (dy_snd_pcm_hw_params_set_buffer_size) {
-		error = dy_snd_pcm_hw_params_set_buffer_size(handle, hw_params, 48000);
-		if (error < 0) {
-			printf("[ALSA] snd_pcm_hw_params_set_buffer_size failed\n");
-			return false;
-		}
-	}
-
-	auto dy_snd_pcm_hw_params = (snd_pcm_hw_params_fun*)dlsym(alsa_dl, "snd_pcm_hw_params");
-	if (dy_snd_pcm_hw_params) {
-		error = dy_snd_pcm_hw_params(handle, hw_params);
-		if (error < 0) {
-			printf("[ALSA] snd_pcm_hw_params failed\n");
-			return false;
-		}
-	}
-
-	snd_pcm_uframes_t period;
-	auto dy_snd_pcm_hw_params_get_period_size = (snd_pcm_hw_params_get_period_size_fun*)dlsym(alsa_dl, "snd_pcm_hw_params_get_period_size");
-	if (dy_snd_pcm_hw_params_get_period_size) {
-		error = dy_snd_pcm_hw_params_get_period_size(hw_params, &period, 0);
-		if (error < 0) {
-			printf("[ALSA] snd_pcm_hw_params_get_period_size failed\n");
-			return false;
-		}
-	}
-
-	auto dy_snd_pcm_dump = (snd_pcm_dump_fun*)dlsym(alsa_dl, "snd_pcm_dump");
-	if (dy_snd_pcm_dump) {
-		error = dy_snd_pcm_dump(handle, log);
-		if (error < 0) {
-			printf("[ALSA] snd_pcm_dump failed\n");
-			return false;
-		}
-	}
+#undef ALSA_CALL
 
 	return true;
 }
