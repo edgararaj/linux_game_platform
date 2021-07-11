@@ -243,8 +243,6 @@ int main()
 
 	get_joysticks(joysticks, max_joy_count);
 
-	SoundBuffer sound_buffer = { .frame_rate = 48000, .channel_num = 2, .length = 2 };
-
 	auto dl_name = "libasound.so";
 	auto alsa_dl = dlopen(dl_name, RTLD_LAZY);
 	if (!alsa_dl) {
@@ -252,7 +250,8 @@ int main()
 		return 0;
 	}
 
-	if (!init_alsa(sound_buffer, alsa_dl)) {
+	SoundBuffer sound_buffer = {};
+	if (!init_alsa(sound_buffer, alsa_dl, 48000, 2, 2)) {
 		printf("[ALSA]: Failed to init alsa\n");
 	}
 
@@ -289,7 +288,7 @@ int main()
 	auto sqr_wave_period = sound_buffer.frame_rate / hz;
 	auto sqr_wave_counter = 0;
 	//u32 sample_index = 0;
-	auto frames_to_write = sound_buffer.frame_rate / 200;
+	auto frames_to_write = sound_buffer.frame_rate / 130;
 
 	auto x_offset = 0.f;
 	auto y_offset = 0.f;
