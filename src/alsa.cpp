@@ -66,12 +66,16 @@ typedef SND_PCM_PREPARE(snd_pcm_prepare_fun);
 	int name(snd_pcm_t* pcm, snd_pcm_sframes_t* availp, snd_pcm_sframes_t* delayp);
 typedef SND_PCM_AVAIL_DELAY(snd_pcm_avail_delay_fun);
 
-bool init_alsa(SoundBuffer& sound_buffer, void* alsa_dl, int frame_rate, int channel_num, int buffer_length)
-{
-	sound_buffer.frame_rate = frame_rate;
-	sound_buffer.channel_num = channel_num;
-	sound_buffer.length = buffer_length;
+#define SND_PCM_DRAIN(name) \
+	int name(snd_pcm_t* pcm);
+typedef SND_PCM_DRAIN(snd_pcm_drain_fun);
 
+#define SND_PCM_CLOSE(name) \
+	int name(snd_pcm_t* pcm);
+typedef SND_PCM_CLOSE(snd_pcm_close_fun);
+
+bool setup_alsa(SoundOutput& sound_buffer, void* alsa_dl)
+{
 	int error;
 
 #define ALSA_CALL(name, ...)                             \

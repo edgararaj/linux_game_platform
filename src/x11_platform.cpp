@@ -28,6 +28,9 @@
 #define EVENT_SIZE sizeof(inotify_event)
 #define BUF_LEN (MAX_EVENTS * (EVENT_SIZE + LEN_NAME))
 
+#define ALSA_DEBUG 0
+#define FPS 1
+
 auto use_xshm = true;
 
 int get_time_in_ns()
@@ -37,6 +40,12 @@ int get_time_in_ns()
 
 	return spec.tv_nsec;
 }
+
+snd_pcm_writei_fun* dy_snd_pcm_writei;
+snd_pcm_recover_fun* dy_snd_pcm_recover;
+snd_pcm_avail_delay_fun* dy_snd_pcm_avail_delay;
+snd_pcm_drain_fun* dy_snd_pcm_drain;
+snd_pcm_close_fun* dy_snd_pcm_close;
 
 struct ScreenBuffer {
 	int width;
@@ -177,6 +186,35 @@ void get_joysticks(Joystick* const joysticks, int max_joy_count)
 	}
 }
 
+void fill_sound_buffer(SoundOutput& sound_output, const uint frames_to_write)
+{
+	for (int i = 0; i < frames_to_write; i++) {
+		auto sample_index = i * sound_output.channel_num;
+		auto sine_value = sinf(sound_output.t_sine);
+		i16 value = sine_value * sound_output.tone_volume;
+		sound_output.sample_buffer[sample_index] = value;
+		sound_output.sample_buffer[sample_index + 1] = value;
+		sound_output.t_sine += M_PIf32 * 2.f / (float)sound_output.wave_period();
+	}
+
+	auto frames_written = dy_snd_pcm_writei(sound_output.handle, sound_output.sample_buffer, frames_to_write);
+	if (frames_written < 0) {
+		frames_written = dy_snd_pcm_recover(sound_output.handle, frames_written, 0);
+	}
+
+	if (frames_written != frames_to_write) {
+		printf("[ALSA]: Only wrote %ld frames (expected %d frames)\n", frames_written, frames_to_write);
+	}
+
+#if ALSA_DEBUG
+	if (frames_written > 0) {
+		snd_pcm_sframes_t delay, avail;
+		dy_snd_pcm_avail_delay(sound_output.handle, &avail, &delay);
+		printf("[ALSA]: Frames after write: %ld (+%ld), Frame delay: %ld\n", sound_output.frame_count() - avail + frames_written, frames_written, delay);
+	}
+#endif
+}
+
 static int fd, wd;
 static bool is_running;
 
@@ -243,35 +281,6 @@ int main()
 
 	get_joysticks(joysticks, max_joy_count);
 
-	auto dl_name = "libasound.so";
-	auto alsa_dl = dlopen(dl_name, RTLD_LAZY);
-	if (!alsa_dl) {
-		printf("[ALSA] Couldn't load %s\n", dl_name);
-		return 0;
-	}
-
-	SoundBuffer sound_buffer = {};
-	if (!init_alsa(sound_buffer, alsa_dl, 48000, 2, 2)) {
-		printf("[ALSA]: Failed to init alsa\n");
-	}
-
-	auto dy_snd_pcm_writei = (snd_pcm_writei_fun*)dlsym(alsa_dl, "snd_pcm_writei");
-	if (!dy_snd_pcm_writei) {
-		printf("[ALSA]: Failed to init alsa\n");
-	}
-
-	auto dy_snd_pcm_recover = (snd_pcm_recover_fun*)dlsym(alsa_dl, "snd_pcm_recover");
-	if (!dy_snd_pcm_recover) {
-		printf("[ALSA]: Failed to init alsa\n");
-	}
-
-	auto dy_snd_pcm_avail_delay = (snd_pcm_avail_delay_fun*)dlsym(alsa_dl, "snd_pcm_avail_delay");
-	if (!dy_snd_pcm_avail_delay) {
-		printf("[ALSA]: Failed to init alsa\n");
-	}
-
-	sound_buffer.sample_buffer = (i16*)calloc(sound_buffer.byte_size(), 1); // @Volatile_bit_depth
-
 	{
 		fd = inotify_init();
 		if (fcntl(fd, F_SETFL, O_NONBLOCK) < 0) {
@@ -284,11 +293,45 @@ int main()
 			printf("[INOTIFY]: Watching %s\n", path);
 	}
 
-	auto hz = 256;
-	auto sqr_wave_period = sound_buffer.frame_rate / hz;
-	auto sqr_wave_counter = 0;
-	//u32 sample_index = 0;
-	auto frames_to_write = sound_buffer.frame_rate / 130;
+	auto dl_name = "libasound.so";
+	auto alsa_dl = dlopen(dl_name, RTLD_LAZY);
+	if (!alsa_dl) {
+		printf("[ALSA] Couldn't load %s\n", dl_name);
+		return 0;
+	}
+
+	SoundOutput sound_output = {};
+	if (!setup_alsa(sound_output, alsa_dl)) {
+		printf("[ALSA]: Failed to init alsa\n");
+	}
+
+	dy_snd_pcm_writei = (snd_pcm_writei_fun*)dlsym(alsa_dl, "snd_pcm_writei");
+	if (!dy_snd_pcm_writei) {
+		printf("[ALSA]: Failed to init alsa\n");
+	}
+
+	dy_snd_pcm_recover = (snd_pcm_recover_fun*)dlsym(alsa_dl, "snd_pcm_recover");
+	if (!dy_snd_pcm_recover) {
+		printf("[ALSA]: Failed to init alsa\n");
+	}
+
+	dy_snd_pcm_avail_delay = (snd_pcm_avail_delay_fun*)dlsym(alsa_dl, "snd_pcm_avail_delay");
+	if (!dy_snd_pcm_avail_delay) {
+		printf("[ALSA]: Failed to init alsa\n");
+	}
+
+	dy_snd_pcm_drain = (snd_pcm_drain_fun*)dlsym(alsa_dl, "snd_pcm_drain");
+	if (!dy_snd_pcm_drain) {
+		printf("[ALSA]: Failed to init alsa\n");
+	}
+
+	dy_snd_pcm_close = (snd_pcm_close_fun*)dlsym(alsa_dl, "snd_pcm_close");
+	if (!dy_snd_pcm_close) {
+		printf("[ALSA]: Failed to init alsa\n");
+	}
+
+	sound_output.sample_buffer = (i16*)calloc(sound_output.byte_size(), 1); // @Volatile_bit_depth
+	fill_sound_buffer(sound_output, sound_output.frame_rate / 30);
 
 	auto x_offset = 0.f;
 	auto y_offset = 0.f;
@@ -348,7 +391,12 @@ int main()
 			js_event joy_event;
 			while (joy.fd && read(joy.fd, &joy_event, sizeof(joy_event)) > 0) {
 				if (joy_event.type & JS_EVENT_BUTTON && joy_event.value) {
-					//printf("[JOYSTICK]: Button %i pressed\n", joy_event.number);
+					printf("[JOYSTICK]: Button %i pressed\n", joy_event.number);
+					switch (joy_event.number) {
+					case 0:
+						sound_output.hz *= 2;
+						break;
+					}
 				} else if (joy_event.type & JS_EVENT_AXIS) {
 					//printf("[JOYSTICK]: Axis %i updated with: %i\n", joy_event.number, joy_event.value);
 					auto pos_threshold = joy.range_max / 5;
@@ -401,36 +449,40 @@ int main()
 				else if (key_event.type == KeyRelease)
 					printf("%i was Released at %ld\n", key_event.keycode, key_event.time);
 #endif
+#if 0
 				auto was_pressed = key_event.type == KeyRelease || (prev_key_event.type == KeyRelease && prev_key_event.time == key_event.time && prev_key_event.keycode == key_event.keycode);
 				auto is_pressed = key_event.type == KeyPress || get_keycode_state(display, key_event.keycode);
 				prev_key_event = key_event;
 
 				if (was_pressed != is_pressed) {
-					if (key_event.keycode == XKeysymToKeycode(display, XK_W)) {
-						up = is_pressed;
-					}
-					if (key_event.keycode == XKeysymToKeycode(display, XK_A)) {
-						left = is_pressed;
-					}
-					if (key_event.keycode == XKeysymToKeycode(display, XK_S)) {
-						down = is_pressed;
-					}
-					if (key_event.keycode == XKeysymToKeycode(display, XK_D)) {
-						right = is_pressed;
-					}
+#endif
+				auto is_pressed = key_event.type == KeyPress;
+				auto keysym = XLookupKeysym(&key_event, 0);
+				switch (keysym) {
+				case XK_w:
+					up = is_pressed;
+					break;
+				case XK_a:
+					left = is_pressed;
+					break;
+				case XK_s:
+					down = is_pressed;
+					break;
+				case XK_d:
+					right = is_pressed;
+					break;
 				}
 
 			} break;
 			case ConfigureNotify: {
-				//printf("[MSG]: ConfigureNotify\n");
-				auto msg = (XConfigureEvent*)&event;
+				auto& msg = *(XConfigureEvent*)&event;
 
-				if (msg->width != buffer.width) {
-					buffer.width = msg->width;
+				if (msg.width != buffer.width) {
+					buffer.width = msg.width;
 					buffer_size_changed = 1;
 				}
-				if (msg->height != buffer.height) {
-					buffer.height = msg->height;
+				if (msg.height != buffer.height) {
+					buffer.height = msg.height;
 					buffer_size_changed = 1;
 				}
 
@@ -462,34 +514,15 @@ int main()
 			}
 		}
 
-		for (int i = 0; i < frames_to_write; i++) {
-			auto sample_index = i * sound_buffer.channel_num;
-			if (!sqr_wave_counter) {
-				sqr_wave_counter = sqr_wave_period;
-			}
-			i16 value = (sqr_wave_counter > (sqr_wave_period / 2) ? 500 : -500);
-			sound_buffer.sample_buffer[sample_index] = value;
-			sound_buffer.sample_buffer[sample_index + 1] = value;
-			sqr_wave_counter--;
-		}
+		auto frames_to_write = sound_output.frame_rate / 130;
 
+#if ALSA_DEBUG
 		snd_pcm_sframes_t delay, avail;
-		dy_snd_pcm_avail_delay(sound_buffer.handle, &avail, &delay);
-		printf("[ALSA]: Frames before write: %ld, Frame delay: %ld\n", sound_buffer.frame_count() - avail, delay);
+		dy_snd_pcm_avail_delay(sound_output.handle, &avail, &delay);
+		printf("[ALSA]: Frames before write: %ld, Frame delay: %ld\n", sound_output.frame_count() - avail, delay);
+#endif
 
-		auto frames_written = dy_snd_pcm_writei(sound_buffer.handle, sound_buffer.sample_buffer, frames_to_write);
-		if (frames_written < 0) {
-			frames_written = dy_snd_pcm_recover(sound_buffer.handle, frames_written, 0);
-		}
-
-		if (frames_written != frames_to_write) {
-			printf("[ALSA]: Only wrote %ld frames (expected %d frames)\n", frames_written, frames_to_write);
-		}
-
-		if (frames_written > 0) {
-			dy_snd_pcm_avail_delay(sound_buffer.handle, &avail, &delay);
-			printf("[ALSA]: Frames after write: %ld (+%ld), Frame delay: %ld\n", sound_buffer.frame_count() - avail + frames_written, frames_written, delay);
-		}
+		fill_sound_buffer(sound_output, frames_to_write);
 
 		if (use_xshm) {
 			XShmPutImage(display, window, gc, buffer.ximage, 0, 0, 0, 0, buffer.width, buffer.height, 0);
@@ -505,11 +538,14 @@ int main()
 		static int fps_display_timer = 0;
 		fps_display_timer++;
 
-#if 1
+#if FPS
 		if (time_elapsed_ns > 0 && fps_display_timer % 100 == 0)
 			printf("[PERF]: %.2fms %ifps\n", time_elapsed_ns / 1e6, (int)(1e9 / time_elapsed_ns));
 #endif
 	}
+
+	//dy_snd_pcm_drain(sound_output.handle);
+	//dy_snd_pcm_close(sound_output.handle);
 
 	delete_screen_buffer(buffer, display);
 	inotify_rm_watch(fd, wd);

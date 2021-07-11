@@ -3,8 +3,8 @@
 set -e
 
 base_dir="$(git rev-parse --show-toplevel)"
-src_dir="$(git rev-parse --show-toplevel)/src"
-build_dir="$(git rev-parse --show-toplevel)/build"
+src_dir="$base_dir/src"
+build_dir="$base_dir/build"
 
 if [ -d "$build_dir" ]; then
 	rm -rf "$build_dir"
