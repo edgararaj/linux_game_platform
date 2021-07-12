@@ -28,8 +28,8 @@
 #define EVENT_SIZE sizeof(inotify_event)
 #define BUF_LEN (MAX_EVENTS * (EVENT_SIZE + LEN_NAME))
 
-#define ALSA_DEBUG 0
-#define FPS 1
+#define ALSA_DEBUG 1
+#define FPS 0
 
 auto use_xshm = true;
 
@@ -186,7 +186,7 @@ void get_joysticks(Joystick* const joysticks, int max_joy_count)
 	}
 }
 
-void fill_sound_buffer(SoundOutput& sound_output, const uint frames_to_write)
+void fill_sound_buffer(SoundOutput& sound_output, const int frames_to_write)
 {
 	for (int i = 0; i < frames_to_write; i++) {
 		auto sample_index = i * sound_output.channel_num;
@@ -194,7 +194,7 @@ void fill_sound_buffer(SoundOutput& sound_output, const uint frames_to_write)
 		i16 value = sine_value * sound_output.tone_volume;
 		sound_output.sample_buffer[sample_index] = value;
 		sound_output.sample_buffer[sample_index + 1] = value;
-		sound_output.t_sine += M_PIf32 * 2.f / (float)sound_output.wave_period();
+		sound_output.t_sine += M_PIf32 * 2.f / sound_output.wave_period();
 	}
 
 	auto frames_written = dy_snd_pcm_writei(sound_output.handle, sound_output.sample_buffer, frames_to_write);
@@ -206,7 +206,7 @@ void fill_sound_buffer(SoundOutput& sound_output, const uint frames_to_write)
 		printf("[ALSA]: Only wrote %ld frames (expected %d frames)\n", frames_written, frames_to_write);
 	}
 
-#if ALSA_DEBUG
+#if 0
 	if (frames_written > 0) {
 		snd_pcm_sframes_t delay, avail;
 		dy_snd_pcm_avail_delay(sound_output.handle, &avail, &delay);
@@ -331,7 +331,7 @@ int main()
 	}
 
 	sound_output.sample_buffer = (i16*)calloc(sound_output.byte_size(), 1); // @Volatile_bit_depth
-	fill_sound_buffer(sound_output, sound_output.frame_rate / 30);
+	fill_sound_buffer(sound_output, sound_output.frame_rate / 15);
 
 	auto x_offset = 0.f;
 	auto y_offset = 0.f;
@@ -391,12 +391,7 @@ int main()
 			js_event joy_event;
 			while (joy.fd && read(joy.fd, &joy_event, sizeof(joy_event)) > 0) {
 				if (joy_event.type & JS_EVENT_BUTTON && joy_event.value) {
-					printf("[JOYSTICK]: Button %i pressed\n", joy_event.number);
-					switch (joy_event.number) {
-					case 0:
-						sound_output.hz *= 2;
-						break;
-					}
+					//printf("[JOYSTICK]: Button %i pressed\n", joy_event.number);
 				} else if (joy_event.type & JS_EVENT_AXIS) {
 					//printf("[JOYSTICK]: Axis %i updated with: %i\n", joy_event.number, joy_event.value);
 					auto pos_threshold = joy.range_max / 5;
@@ -495,6 +490,8 @@ int main()
 		x_offset += joy.axis0 * 1.5 + (right - left) * 1.5;
 		y_offset += joy.axis1 * 1.5 + (down - up) * 1.5;
 
+		sound_output.hz = 512.f + joy.axis1 * 256.f;
+
 		if (buffer_size_changed) {
 			printf("BufferSizeChanged\n");
 			delete_screen_buffer(buffer, display);
@@ -514,13 +511,22 @@ int main()
 			}
 		}
 
-		auto frames_to_write = sound_output.frame_rate / 130;
+		auto expected_sound_frames_per_video_frame = sound_output.frame_rate / 20;
 
-#if ALSA_DEBUG
+		static int printf_timer = 0;
+		printf_timer++;
+
 		snd_pcm_sframes_t delay, avail;
 		dy_snd_pcm_avail_delay(sound_output.handle, &avail, &delay);
-		printf("[ALSA]: Frames before write: %ld, Frame delay: %ld\n", sound_output.frame_count() - avail, delay);
-#endif
+		expected_sound_frames_per_video_frame -= delay;
+
+		auto frames_to_write = expected_sound_frames_per_video_frame > avail ? avail : expected_sound_frames_per_video_frame;
+		if (frames_to_write < 0)
+			frames_to_write = 0;
+
+		if (printf_timer % 100 == 0) {
+			printf("[ALSA]: Delay: %.3fs, Avail: %.3fs, Expected: %.3fs, Filling: %.3fs\n", (float)delay / (float)sound_output.frame_rate, (float)avail / (float)sound_output.frame_rate, (float)expected_sound_frames_per_video_frame / (float)sound_output.frame_rate, (float)frames_to_write / (float)sound_output.frame_rate);
+		}
 
 		fill_sound_buffer(sound_output, frames_to_write);
 
@@ -535,11 +541,8 @@ int main()
 		const auto time_elapsed_ns = timer_end - timer_start;
 		timer_start = timer_end;
 
-		static int fps_display_timer = 0;
-		fps_display_timer++;
-
 #if FPS
-		if (time_elapsed_ns > 0 && fps_display_timer % 100 == 0)
+		if (time_elapsed_ns > 0 && printf_timer % 100 == 0)
 			printf("[PERF]: %.2fms %ifps\n", time_elapsed_ns / 1e6, (int)(1e9 / time_elapsed_ns));
 #endif
 	}
