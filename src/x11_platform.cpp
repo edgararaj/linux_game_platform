@@ -28,8 +28,8 @@
 #define EVENT_SIZE sizeof(inotify_event)
 #define BUF_LEN (MAX_EVENTS * (EVENT_SIZE + LEN_NAME))
 
-#define ALSA_DEBUG 1
-#define FPS 0
+#define ALSA_DEBUG 0
+#define FPS 1
 
 auto use_xshm = true;
 
@@ -486,6 +486,7 @@ int main()
 		if (frames_to_write < 0)
 			frames_to_write = 0;
 
+#if ALSA_DEBUG
 		if (printf_timer % 100 == 0) {
 			const auto log_delay = (float)delay / (float)sound_output.frame_rate;
 			const auto log_avail = (float)avail / (float)sound_output.frame_rate;
@@ -493,6 +494,7 @@ int main()
 			const auto log_filling = (float)frames_to_write / (float)sound_output.frame_rate;
 			printf("[ALSA]: Delay: %.3fs, Avail: %.3fs, Expected: %.3fs, Filling: %.3fs\n", log_delay, log_avail, log_expected, log_filling);
 		}
+#endif
 
 		fill_sound_buffer(sound_output, frames_to_write);
 
