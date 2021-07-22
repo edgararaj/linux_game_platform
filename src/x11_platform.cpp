@@ -41,12 +41,6 @@ int get_time_in_ns()
 	return spec.tv_nsec;
 }
 
-snd_pcm_writei_fun* dy_snd_pcm_writei;
-snd_pcm_recover_fun* dy_snd_pcm_recover;
-snd_pcm_avail_delay_fun* dy_snd_pcm_avail_delay;
-snd_pcm_drain_fun* dy_snd_pcm_drain;
-snd_pcm_close_fun* dy_snd_pcm_close;
-
 struct ScreenBuffer {
 	int width;
 	int height;
@@ -197,9 +191,9 @@ void fill_sound_buffer(SoundOutput& sound_output, const int frames_to_write)
 		sound_output.t_sine += M_PIf32 * 2.f / sound_output.wave_period();
 	}
 
-	auto frames_written = dy_snd_pcm_writei(sound_output.handle, sound_output.sample_buffer, frames_to_write);
+	auto frames_written = snd_pcm_writei(sound_output.handle, sound_output.sample_buffer, frames_to_write);
 	if (frames_written < 0) {
-		frames_written = dy_snd_pcm_recover(sound_output.handle, frames_written, 0);
+		frames_written = snd_pcm_recover(sound_output.handle, frames_written, 0);
 	}
 
 	if (frames_written != frames_to_write) {
@@ -209,7 +203,7 @@ void fill_sound_buffer(SoundOutput& sound_output, const int frames_to_write)
 #if 0
 	if (frames_written > 0) {
 		snd_pcm_sframes_t delay, avail;
-		dy_snd_pcm_avail_delay(sound_output.handle, &avail, &delay);
+		snd_pcm_avail_delay(sound_output.handle, &avail, &delay);
 		printf("[ALSA]: Frames after write: %ld (+%ld), Frame delay: %ld\n", sound_output.frame_count() - avail + frames_written, frames_written, delay);
 	}
 #endif
@@ -293,40 +287,8 @@ int main()
 			printf("[INOTIFY]: Watching %s\n", path);
 	}
 
-	auto dl_name = "libasound.so";
-	auto alsa_dl = dlopen(dl_name, RTLD_LAZY);
-	if (!alsa_dl) {
-		printf("[ALSA] Couldn't load %s\n", dl_name);
-		return 0;
-	}
-
 	SoundOutput sound_output = {};
-	if (!setup_alsa(sound_output, alsa_dl)) {
-		printf("[ALSA]: Failed to init alsa\n");
-	}
-
-	dy_snd_pcm_writei = (snd_pcm_writei_fun*)dlsym(alsa_dl, "snd_pcm_writei");
-	if (!dy_snd_pcm_writei) {
-		printf("[ALSA]: Failed to init alsa\n");
-	}
-
-	dy_snd_pcm_recover = (snd_pcm_recover_fun*)dlsym(alsa_dl, "snd_pcm_recover");
-	if (!dy_snd_pcm_recover) {
-		printf("[ALSA]: Failed to init alsa\n");
-	}
-
-	dy_snd_pcm_avail_delay = (snd_pcm_avail_delay_fun*)dlsym(alsa_dl, "snd_pcm_avail_delay");
-	if (!dy_snd_pcm_avail_delay) {
-		printf("[ALSA]: Failed to init alsa\n");
-	}
-
-	dy_snd_pcm_drain = (snd_pcm_drain_fun*)dlsym(alsa_dl, "snd_pcm_drain");
-	if (!dy_snd_pcm_drain) {
-		printf("[ALSA]: Failed to init alsa\n");
-	}
-
-	dy_snd_pcm_close = (snd_pcm_close_fun*)dlsym(alsa_dl, "snd_pcm_close");
-	if (!dy_snd_pcm_close) {
+	if (!setup_alsa(sound_output)) {
 		printf("[ALSA]: Failed to init alsa\n");
 	}
 
@@ -517,7 +479,7 @@ int main()
 		printf_timer++;
 
 		snd_pcm_sframes_t delay, avail;
-		dy_snd_pcm_avail_delay(sound_output.handle, &avail, &delay);
+		snd_pcm_avail_delay(sound_output.handle, &avail, &delay);
 		expected_sound_frames_per_video_frame -= delay;
 
 		auto frames_to_write = expected_sound_frames_per_video_frame > avail ? avail : expected_sound_frames_per_video_frame;
@@ -547,8 +509,8 @@ int main()
 #endif
 	}
 
-	//dy_snd_pcm_drain(sound_output.handle);
-	//dy_snd_pcm_close(sound_output.handle);
+	//snd_pcm_drain(sound_output.handle);
+	//snd_pcm_close(sound_output.handle);
 
 	delete_screen_buffer(buffer, display);
 	inotify_rm_watch(fd, wd);
