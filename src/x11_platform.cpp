@@ -487,7 +487,11 @@ int main()
 			frames_to_write = 0;
 
 		if (printf_timer % 100 == 0) {
-			printf("[ALSA]: Delay: %.3fs, Avail: %.3fs, Expected: %.3fs, Filling: %.3fs\n", (float)delay / (float)sound_output.frame_rate, (float)avail / (float)sound_output.frame_rate, (float)expected_sound_frames_per_video_frame / (float)sound_output.frame_rate, (float)frames_to_write / (float)sound_output.frame_rate);
+			const auto log_delay = (float)delay / (float)sound_output.frame_rate;
+			const auto log_avail = (float)avail / (float)sound_output.frame_rate;
+			const auto log_expected = (float)expected_sound_frames_per_video_frame / (float)sound_output.frame_rate;
+			const auto log_filling = (float)frames_to_write / (float)sound_output.frame_rate;
+			printf("[ALSA]: Delay: %.3fs, Avail: %.3fs, Expected: %.3fs, Filling: %.3fs\n", log_delay, log_avail, log_expected, log_filling);
 		}
 
 		fill_sound_buffer(sound_output, frames_to_write);
