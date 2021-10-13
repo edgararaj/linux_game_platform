@@ -10,6 +10,8 @@
 #include <x86intrin.h>
 
 #include "alsa.cpp"
+#include "game.cpp"
+#include "game.h"
 #include "joystick.cpp"
 #include "optional.h"
 #include "types.h"
@@ -333,14 +335,9 @@ int main()
 			buffer_size_changed = false;
 		}
 
-		for (int y = 0; y < buffer.height; y++) {
-			auto row = buffer.buffer + (y * buffer.pitch());
-			for (int x = 0; x < buffer.width; x++) {
-				auto p = (u32*)(row + (x * buffer.pixel_bytes()));
+		GameScreenBuffer game_buffer = { .width = buffer.width, .height = buffer.height, .pixel_bits = buffer.pixel_bits, .buffer = buffer.buffer };
 
-				*p = (u8)(y + y_offset) << 8 | (u8)(x + x_offset);
-			}
-		}
+		game_update_and_render(game_buffer, x_offset, y_offset);
 
 		auto expected_sound_frames_per_video_frame = sound_output.frame_rate / 20;
 
