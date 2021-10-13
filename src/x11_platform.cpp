@@ -33,7 +33,7 @@
 
 auto use_xshm = true;
 
-int get_time_in_ns()
+int get_ns_time()
 {
 	timespec spec;
 	clock_gettime(CLOCK_MONOTONIC, &spec);
@@ -306,7 +306,7 @@ int main()
 	bool key_is_pressed = false;
 
 	auto buffer_size_changed = 0;
-	auto timer_start = get_time_in_ns();
+	auto timer_start = get_ns_time();
 	is_running = true;
 	while (is_running) {
 
@@ -505,13 +505,13 @@ int main()
 			XPutImage(display, window, gc, buffer.ximage, 0, 0, 0, 0, buffer.width, buffer.height);
 		}
 
-		const auto timer_end = get_time_in_ns();
-		const auto time_elapsed_ns = timer_end - timer_start;
+		const auto timer_end = get_ns_time();
+		const auto ns_time_elapsed = timer_end - timer_start;
 		timer_start = timer_end;
 
 #if FPS
-		if (time_elapsed_ns > 0 && printf_timer % 100 == 0)
-			printf("[PERF]: %.2fms %ifps\n", time_elapsed_ns / 1e6, (int)(1e9 / time_elapsed_ns));
+		if (ns_time_elapsed > 0 && printf_timer % 100 == 0)
+			printf("[PERF]: %.2fms %ifps\n", ns_time_elapsed / 1e6, (int)(1e9 / ns_time_elapsed));
 #endif
 	}
 
