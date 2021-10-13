@@ -1,32 +1,19 @@
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 #include <X11/extensions/XShm.h>
-#include <dlfcn.h>
-#include <fcntl.h>
-#include <linux/joystick.h>
 #include <malloc.h>
-#include <math.h>
 #include <signal.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <sys/inotify.h>
-#include <sys/ipc.h>
 #include <sys/shm.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <time.h>
-#include <unistd.h>
+#include <x86intrin.h>
 
 #include "alsa.cpp"
+#include "joystick.cpp"
 #include "optional.h"
 #include "types.h"
 #include "x11_platform.h"
-
-#define MAX_EVENTS 1024
-#define LEN_NAME 16
-#define EVENT_SIZE sizeof(inotify_event)
-#define BUF_LEN (MAX_EVENTS * (EVENT_SIZE + LEN_NAME))
 
 #define ALSA_DEBUG 0
 #define FPS 1
@@ -100,84 +87,11 @@ bool create_screen_buffer(ScreenBuffer& buffer, int width, int height, int pixel
 	return 1;
 }
 
-struct Joystick {
-	int range_min;
-	int range_max;
-	int fd;
-	float axis0;
-	float axis1;
-};
-
-bool get_joystick(Joystick& joy, const char* const path)
-{
-	bool result = false;
-	joy.fd = open(path, O_RDONLY | O_NONBLOCK);
-	if (joy.fd < 0) {
-		fprintf(stderr, "Couldn't open %s\n", path);
-		return result;
-	}
-
-	u8 num_axis = 0;
-	u8 num_buttons = 0;
-	ioctl(joy.fd, JSIOCGAXES, &num_axis);
-	ioctl(joy.fd, JSIOCGBUTTONS, &num_buttons);
-
-	char name[1024];
-	ioctl(joy.fd, JSIOCGNAME(sizeof(name)), name);
-
-	printf("[JOYSTICK]: %s is connected (Axis: %i, Buttons: %i)\n", name, num_axis, num_buttons);
-
-	auto corr = (js_corr*)malloc(num_axis * sizeof(js_corr));
-	ioctl(joy.fd, JSIOCGCORR, corr);
-
-	if (corr && corr->type) {
-		auto center_min = corr->coef[0];
-		auto center_max = corr->coef[1];
-
-		auto invert = (corr->coef[2] < 0 && corr->coef[3] < 0);
-		if (invert) {
-			corr->coef[2] = -corr->coef[2];
-			corr->coef[3] = -corr->coef[3];
-		}
-
-		// Need to use double and rint(), since calculation doesn't end
-		// up on clean integer positions (i.e. 0.9999 can happen)
-		joy.range_min = rint(center_min - ((32767.0 * 16384) / corr->coef[2]));
-		joy.range_max = rint((32767.0 * 16384) / corr->coef[3] + center_max);
-
-		printf("[JOYSTICK]: Invert: %i CenterMin: %i CenterMax: %i RangeMin: %i RangeMax: %i\n", invert, center_min, center_max, joy.range_min, joy.range_max);
-
-		result = true;
-	}
-
-	free(corr);
-	return result;
-}
-
 bool get_keycode_state(Display* display, uint keycode)
 {
 	char keys[32];
 	XQueryKeymap(display, keys);
 	return (keys[keycode / 8] & (0x1 << (keycode % 8)));
-}
-
-bool get_joystick_by_index(Joystick& joy, int i)
-{
-	char joy_path[sizeof("/dev/input/js1")]; // @Volatile_max_joy_count
-	snprintf(joy_path, sizeof(joy_path), "/dev/input/js%i", i);
-
-	if (get_joystick(joy, joy_path))
-		return true;
-
-	return false;
-}
-
-void get_joysticks(Joystick* const joysticks, int max_joy_count)
-{
-	for (int i = 0; i < max_joy_count; i++) {
-		auto& joy = joysticks[i];
-		get_joystick_by_index(joy, i);
-	}
 }
 
 void fill_sound_buffer(SoundOutput& sound_output, const int frames_to_write)
@@ -209,8 +123,7 @@ void fill_sound_buffer(SoundOutput& sound_output, const int frames_to_write)
 #endif
 }
 
-static int fd, wd;
-static bool is_running;
+auto is_running = true;
 
 void sig_handler(int sig)
 {
@@ -272,23 +185,14 @@ int main()
 
 	const auto max_joy_count = 1; // @Volatile_max_joy_count
 	Joystick joysticks[max_joy_count] = {};
+	JoystickInotify joystick_inotify;
 
 	get_joysticks(joysticks, max_joy_count);
 
-	{
-		fd = inotify_init();
-		if (fcntl(fd, F_SETFL, O_NONBLOCK) < 0) {
-			fprintf(stderr, "Failed to fctnl\n");
-		}
-
-		auto path = "/dev/input";
-		wd = inotify_add_watch(fd, path, IN_CREATE | IN_DELETE);
-		if (wd != -1)
-			printf("[INOTIFY]: Watching %s\n", path);
-	}
+	joystick_inotify_setup(joystick_inotify);
 
 	SoundOutput sound_output = {};
-	if (!setup_alsa(sound_output)) {
+	if (!alsa_setup(sound_output)) {
 		printf("[ALSA]: Failed to init alsa\n");
 	}
 
@@ -305,48 +209,13 @@ int main()
 	XKeyEvent prev_key_event = {};
 	bool key_is_pressed = false;
 
-	auto buffer_size_changed = 0;
+	auto buffer_size_changed = false;
 	auto timer_start = get_ns_time();
+	auto cycle_count_start = __rdtsc();
 	is_running = true;
 	while (is_running) {
 
-		char ibuffer[BUF_LEN];
-
-		auto length = read(fd, ibuffer, BUF_LEN);
-
-		for (int i = 0; i < length;) {
-
-			auto event = (inotify_event*)&ibuffer[i];
-
-			if (event->len) {
-				if ((event_mask & IN_ISDIR) == 0 && event->mask & (IN_CREATE | IN_DELETE)) {
-					const char pattern[] = "js";
-					auto pattern_len = sizeof(pattern) - 1;
-					if (strncmp(event->name, pattern, pattern_len) == 0) {
-						sleep(1); // @Hack
-						if (event->mask & IN_CREATE) {
-							printf("[INOTIFY]: %s was created\n", event->name);
-							auto joy_index = strtol(event->name, 0, 10);
-
-							if (joy_index < max_joy_count) {
-								auto& joy = joysticks[joy_index];
-								get_joystick_by_index(joy, joy_index);
-							}
-
-						} else if (event->mask & IN_DELETE) {
-							printf("[INOTIFY]: %s was deleted\n", event->name);
-							auto joy_index = strtol(event->name, 0, 10);
-
-							if (joy_index < max_joy_count) {
-								joysticks[joy_index] = {};
-							}
-						}
-					}
-				}
-			}
-
-			i += EVENT_SIZE + event->len;
-		}
+		joystick_inotify_update(joystick_inotify, joysticks, max_joy_count);
 
 		for (int i = 0; i < max_joy_count; i++) {
 			auto& joy = joysticks[i];
@@ -436,11 +305,11 @@ int main()
 
 				if (msg.width != buffer.width) {
 					buffer.width = msg.width;
-					buffer_size_changed = 1;
+					buffer_size_changed = true;
 				}
 				if (msg.height != buffer.height) {
 					buffer.height = msg.height;
-					buffer_size_changed = 1;
+					buffer_size_changed = true;
 				}
 
 			} break;
@@ -461,7 +330,7 @@ int main()
 				delete_screen_buffer(buffer, display);
 				return 1;
 			}
-			buffer_size_changed = 0;
+			buffer_size_changed = false;
 		}
 
 		for (int y = 0; y < buffer.height; y++) {
@@ -506,12 +375,15 @@ int main()
 		}
 
 		const auto timer_end = get_ns_time();
-		const auto ns_time_elapsed = timer_end - timer_start;
+		const auto cycle_count_end = __rdtsc();
+		const auto ns_elapsed = timer_end - timer_start;
+		const auto cycles_elapsed = cycle_count_end - cycle_count_start;
 		timer_start = timer_end;
+		cycle_count_start = cycle_count_end;
 
 #if FPS
-		if (ns_time_elapsed > 0 && printf_timer % 100 == 0)
-			printf("[PERF]: %.2fms %ifps\n", ns_time_elapsed / 1e6, (int)(1e9 / ns_time_elapsed));
+		if (ns_elapsed > 0 && printf_timer % 100 == 0)
+			printf("[PERF]: %.2fms %ifps %.2fmc\n", ns_elapsed / 1e6, (int)(1e9 / ns_elapsed), cycles_elapsed / 1e6);
 #endif
 	}
 
@@ -519,8 +391,7 @@ int main()
 	//snd_pcm_close(sound_output.handle);
 
 	delete_screen_buffer(buffer, display);
-	inotify_rm_watch(fd, wd);
-	close(fd);
+	joystick_inotify_close(joystick_inotify);
 
 	printf("END OF THE PROGRAM!\n");
 }
