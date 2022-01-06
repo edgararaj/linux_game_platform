@@ -29,8 +29,11 @@ void game_draw_thing(const GameScreenBuffer& buffer, const int x_offset, const i
 	}
 }
 
-void game_update_and_render(const GameScreenBuffer& buffer, GameSoundBuffer& sound_buffer, const int x_offset, const int y_offset, const int tone_hz)
+void game_update_and_render(const GameScreenBuffer& buffer, GameSoundBuffer& sound_buffer)
 {
+	static int x_offset;
+	static int y_offset;
+	static int tone_hz = 256;
 	game_output_sound(sound_buffer, tone_hz);
 	game_draw_thing(buffer, x_offset, y_offset);
 }

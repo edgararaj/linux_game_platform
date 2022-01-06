@@ -192,8 +192,6 @@ int main()
 	sound_output.sample_buffer = (i16*)calloc(sound_output.byte_size(), 1); // @Volatile_bit_depth
 	write_sound_buffer(sound_output, sound_output.frame_rate / 15);
 
-	auto x_offset = 0.f;
-	auto y_offset = 0.f;
 	auto up = 0;
 	auto down = 0;
 	auto left = 0;
@@ -311,11 +309,6 @@ int main()
 
 		auto& joy = joysticks[0];
 
-		x_offset += joy.axis0 * 1.5 + (right - left) * 1.5;
-		y_offset += joy.axis1 * 1.5 + (down - up) * 1.5;
-
-		sound_output.hz = 512.f + joy.axis1 * 256.f;
-
 		if (buffer_size_changed) {
 			printf("BufferSizeChanged\n");
 			delete_screen_buffer(buffer, display);
@@ -339,7 +332,7 @@ int main()
 		GameScreenBuffer game_buffer = { .width = buffer.width, .height = buffer.height, .pixel_bits = buffer.pixel_bits, .buffer = buffer.buffer };
 		GameSoundBuffer game_sound_buffer = { .frame_rate = sound_output.frame_rate, .channel_num = sound_output.channel_num, .sample_buffer = sound_output.sample_buffer, .frame_count = frames_to_write };
 
-		game_update_and_render(game_buffer, game_sound_buffer, x_offset, y_offset, sound_output.hz);
+		game_update_and_render(game_buffer, game_sound_buffer);
 		write_sound_buffer(sound_output, frames_to_write);
 
 		static int printf_timer = 0;
