@@ -44,10 +44,10 @@ bool alsa_setup(SoundOutput& sound_buffer)
 	ALSA_CALL(snd_pcm_hw_params_set_rate, sound_buffer.handle, hw_params, sound_buffer.frame_rate, 0);
 	ALSA_CALL(snd_pcm_hw_params_set_buffer_size, sound_buffer.handle, hw_params, sound_buffer.frame_count());
 	ALSA_CALL(snd_pcm_hw_params, sound_buffer.handle, hw_params);
-	//ALSA_CALL(snd_pcm_prepare, sound_buffer.handle);
+	// ALSA_CALL(snd_pcm_prepare, sound_buffer.handle);
 
-	//snd_pcm_uframes_t period;
-	//ALSA_CALL(snd_pcm_hw_params_get_period_size, hw_params, &period, 0);
+	// snd_pcm_uframes_t period;
+	// ALSA_CALL(snd_pcm_hw_params_get_period_size, hw_params, &period, 0);
 	ALSA_CALL(snd_pcm_dump, sound_buffer.handle, log);
 
 #undef ALSA_CALL

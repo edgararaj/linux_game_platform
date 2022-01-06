@@ -96,17 +96,8 @@ bool get_keycode_state(Display* display, uint keycode)
 	return (keys[keycode / 8] & (0x1 << (keycode % 8)));
 }
 
-void fill_sound_buffer(SoundOutput& sound_output, const int frames_to_write)
+void write_sound_buffer(SoundOutput& sound_output, const int frames_to_write)
 {
-	for (int i = 0; i < frames_to_write; i++) {
-		auto sample_index = i * sound_output.channel_num;
-		auto sine_value = sinf(sound_output.t_sine);
-		i16 value = sine_value * sound_output.tone_volume;
-		sound_output.sample_buffer[sample_index] = value;
-		sound_output.sample_buffer[sample_index + 1] = value;
-		sound_output.t_sine += M_PIf32 * 2.f / sound_output.wave_period();
-	}
-
 	auto frames_written = snd_pcm_writei(sound_output.handle, sound_output.sample_buffer, frames_to_write);
 	if (frames_written < 0) {
 		frames_written = snd_pcm_recover(sound_output.handle, frames_written, 0);
@@ -199,7 +190,7 @@ int main()
 	}
 
 	sound_output.sample_buffer = (i16*)calloc(sound_output.byte_size(), 1); // @Volatile_bit_depth
-	fill_sound_buffer(sound_output, sound_output.frame_rate / 15);
+	write_sound_buffer(sound_output, sound_output.frame_rate / 15);
 
 	auto x_offset = 0.f;
 	auto y_offset = 0.f;
@@ -224,9 +215,9 @@ int main()
 			js_event joy_event;
 			while (joy.fd && read(joy.fd, &joy_event, sizeof(joy_event)) > 0) {
 				if (joy_event.type & JS_EVENT_BUTTON && joy_event.value) {
-					//printf("[JOYSTICK]: Button %i pressed\n", joy_event.number);
+					// printf("[JOYSTICK]: Button %i pressed\n", joy_event.number);
 				} else if (joy_event.type & JS_EVENT_AXIS) {
-					//printf("[JOYSTICK]: Axis %i updated with: %i\n", joy_event.number, joy_event.value);
+					// printf("[JOYSTICK]: Axis %i updated with: %i\n", joy_event.number, joy_event.value);
 					auto pos_threshold = joy.range_max / 5;
 					auto neg_threshold = joy.range_min / 5;
 					if (joy_event.number == 0) {
@@ -335,14 +326,7 @@ int main()
 			buffer_size_changed = false;
 		}
 
-		GameScreenBuffer game_buffer = { .width = buffer.width, .height = buffer.height, .pixel_bits = buffer.pixel_bits, .buffer = buffer.buffer };
-
-		game_update_and_render(game_buffer, x_offset, y_offset);
-
 		auto expected_sound_frames_per_video_frame = sound_output.frame_rate / 20;
-
-		static int printf_timer = 0;
-		printf_timer++;
 
 		snd_pcm_sframes_t delay, avail;
 		snd_pcm_avail_delay(sound_output.handle, &avail, &delay);
@@ -351,6 +335,15 @@ int main()
 		auto frames_to_write = expected_sound_frames_per_video_frame > avail ? avail : expected_sound_frames_per_video_frame;
 		if (frames_to_write < 0)
 			frames_to_write = 0;
+
+		GameScreenBuffer game_buffer = { .width = buffer.width, .height = buffer.height, .pixel_bits = buffer.pixel_bits, .buffer = buffer.buffer };
+		GameSoundBuffer game_sound_buffer = { .frame_rate = sound_output.frame_rate, .channel_num = sound_output.channel_num, .sample_buffer = sound_output.sample_buffer, .frame_count = frames_to_write };
+
+		game_update_and_render(game_buffer, game_sound_buffer, x_offset, y_offset, sound_output.hz);
+		write_sound_buffer(sound_output, frames_to_write);
+
+		static int printf_timer = 0;
+		printf_timer++;
 
 #if ALSA_DEBUG
 		if (printf_timer % 100 == 0) {
@@ -361,8 +354,6 @@ int main()
 			printf("[ALSA]: Delay: %.3fs, Avail: %.3fs, Expected: %.3fs, Filling: %.3fs\n", log_delay, log_avail, log_expected, log_filling);
 		}
 #endif
-
-		fill_sound_buffer(sound_output, frames_to_write);
 
 		if (use_xshm) {
 			XShmPutImage(display, window, gc, buffer.ximage, 0, 0, 0, 0, buffer.width, buffer.height, 0);
@@ -384,8 +375,8 @@ int main()
 #endif
 	}
 
-	//snd_pcm_drain(sound_output.handle);
-	//snd_pcm_close(sound_output.handle);
+	// snd_pcm_drain(sound_output.handle);
+	// snd_pcm_close(sound_output.handle);
 
 	delete_screen_buffer(buffer, display);
 	joystick_inotify_close(joystick_inotify);
