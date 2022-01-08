@@ -3,6 +3,10 @@
 #include <math.h>
 #include <stdio.h>
 
+struct GameState {
+	int x_offset, y_offset;
+};
+
 void game_output_sound(GameSoundBuffer& sound_output, const int tone_hz)
 {
 	static float t_sine = 0;
@@ -30,21 +34,25 @@ void game_draw_thing(const GameScreenBuffer& buffer, const int x_offset, const i
 	}
 }
 
-void game_update_and_render(const GameScreenBuffer& buffer, GameSoundBuffer& sound_buffer, const GameInput& input)
+void game_update_and_render(GameMemory& memory, const GameScreenBuffer& buffer, GameSoundBuffer& sound_buffer, const GameInput& input)
 {
-	static int x_offset;
-	static int y_offset;
-	int tone_hz = 256;
+	assert(sizeof(GameState) <= memory.perm_storage_size);
+	auto& state = *(GameState*)memory.perm_storage;
+	if (!memory.is_initialized) {
+		state.x_offset = 0;
+		state.y_offset = 0;
+		memory.is_initialized = true;
+	}
 
 	const auto& input0 = input.ctrls[0];
-	tone_hz += (int)(128.f * input0.end_x);
-	x_offset += (int)(4.0f * input0.end_x);
-	y_offset += (int)(4.0f * input0.end_y);
+	const auto tone_hz = 256 + (int)(128.f * input0.end_x);
+	state.x_offset += (int)(4.0f * input0.end_x);
+	state.y_offset += (int)(4.0f * input0.end_y);
 
 	if (input0.down.ended_down) {
-		x_offset += 1;
+		state.x_offset += 1;
 	}
 
 	game_output_sound(sound_buffer, tone_hz);
-	game_draw_thing(buffer, x_offset, y_offset);
+	game_draw_thing(buffer, state.x_offset, state.y_offset);
 }

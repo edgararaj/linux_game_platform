@@ -1,4 +1,9 @@
 #pragma once
+#if SLOW
+#	include <assert.h>
+#else
+#	define assert()
+#endif
 #include <stdint.h>
 
 typedef uint8_t u8;
@@ -10,4 +15,9 @@ typedef int16_t i16;
 typedef int32_t i32;
 typedef int64_t i64;
 
-#define countof(x) (sizeof(x) / sizeof((x)[0]))
+#define countof(x) (std::extent<decltype(x)>::value)
+
+#define KiB(x) ((x)*1024ll)
+#define MiB(x) (KiB(x) * 1024ll)
+#define GiB(x) (MiB(x) * 1024ll)
+#define TiB(x) (GiB(x) * 1024ll)

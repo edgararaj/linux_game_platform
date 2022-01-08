@@ -25,8 +25,7 @@ struct GameBtnState {
 	bool ended_down;
 };
 
-struct GameCtrlInput
-{
+struct GameCtrlInput {
 	bool is_analog;
 
 	float start_x;
@@ -54,3 +53,13 @@ struct GameCtrlInput
 struct GameInput {
 	GameCtrlInput ctrls[4]; // @Volatile_max_joy_count
 };
+
+struct GameMemory {
+	u64 perm_storage_size;
+	void* perm_storage;
+	u64 trans_storage_size;
+	void* trans_storage;
+	bool is_initialized;
+};
+
+void game_update_and_render(GameMemory& memory, const GameScreenBuffer& buffer, GameSoundBuffer& sound_buffer, const GameInput& input);

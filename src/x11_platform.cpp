@@ -3,16 +3,17 @@
 #include <X11/extensions/XShm.h>
 #include <malloc.h>
 #include <signal.h>
+#include <sys/mman.h>
 #include <sys/shm.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <time.h>
 #include <x86intrin.h>
 
-#include "alsa.cpp"
 #include "game.cpp"
 #include "game.h"
-#include "joystick.cpp"
+#include "linux_alsa.cpp"
+#include "linux_joystick.cpp"
 #include "optional.h"
 #include "types.h"
 #include "x11_platform.h"
@@ -186,11 +187,31 @@ int main()
 
 	XMapRaised(display, window);
 
+	void* base_addr =
+#if INTERNAL
+		(void*)GiB(3)
+#else
+		0
+#endif
+		;
+
+	GameMemory game_memory = {};
+	game_memory.perm_storage_size = MiB(64);
+	game_memory.trans_storage_size = GiB(2);
+	game_memory.perm_storage = mmap(base_addr, game_memory.perm_storage_size + game_memory.trans_storage_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	printf("mmap on %#018x\n", game_memory.perm_storage);
+	game_memory.trans_storage = (u8*)game_memory.perm_storage + game_memory.trans_storage_size;
+
+	if (!game_memory.perm_storage || game_memory.perm_storage == MAP_FAILED
+		|| !game_memory.trans_storage || game_memory.trans_storage == MAP_FAILED) {
+		fprintf(stderr, "Failed to allocate game memory: %s!\n", strerror(errno));
+		return 1;
+	}
+
 	GameInput inputs[2] = {};
 	auto& prev_input = inputs[0];
-	prev_input.ctrls[0].end_x = 0.f;
-	prev_input.ctrls[0].end_y = 0.f;
 	auto& new_input = inputs[1];
+
 	const auto max_joy_count = 1; // countof(new_input.ctrls);
 	Joystick joysticks[max_joy_count] = {};
 	JoystickInotify joystick_inotify;
@@ -363,7 +384,7 @@ int main()
 		GameScreenBuffer game_buffer = { .width = buffer.width, .height = buffer.height, .pixel_bits = buffer.pixel_bits, .buffer = buffer.buffer };
 		GameSoundBuffer game_sound_buffer = { .frame_rate = sound_output.frame_rate, .channel_num = sound_output.channel_num, .sample_buffer = sound_output.sample_buffer, .frame_count = frames_to_write };
 
-		game_update_and_render(game_buffer, game_sound_buffer, new_input);
+		game_update_and_render(game_memory, game_buffer, game_sound_buffer, new_input);
 		write_sound_buffer(sound_output, frames_to_write);
 
 		if (use_xshm) {
