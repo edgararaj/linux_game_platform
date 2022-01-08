@@ -16,8 +16,6 @@ struct Joystick {
 	int range_min;
 	int range_max;
 	int fd;
-	float axis0;
-	float axis1;
 };
 
 struct JoystickInotify {

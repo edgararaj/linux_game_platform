@@ -26,7 +26,6 @@ int get_ns_time()
 {
 	timespec spec;
 	clock_gettime(CLOCK_MONOTONIC, &spec);
-
 	return spec.tv_nsec;
 }
 
@@ -116,6 +115,17 @@ void write_sound_buffer(SoundOutput& sound_output, const int frames_to_write)
 #endif
 }
 
+void process_joy_axis_event(float state, float& new_state, const float& prev_state)
+{
+	new_state = state == INFINITY ? prev_state : state;
+}
+
+void process_joy_btn_event(int state, GameBtnState& new_state, const GameBtnState& prev_state)
+{
+	new_state.ended_down = state == -1 ? prev_state.ended_down : state;
+	new_state.half_trans_count = prev_state.ended_down != state ? 1 : 0;
+}
+
 auto is_running = true;
 
 void sig_handler(int sig)
@@ -176,7 +186,12 @@ int main()
 
 	XMapRaised(display, window);
 
-	const auto max_joy_count = 1; // @Volatile_max_joy_count
+	GameInput inputs[2] = {};
+	auto& prev_input = inputs[0];
+	prev_input.ctrls[0].end_x = 0.f;
+	prev_input.ctrls[0].end_y = 0.f;
+	auto& new_input = inputs[1];
+	const auto max_joy_count = 1; // countof(new_input.ctrls);
 	Joystick joysticks[max_joy_count] = {};
 	JoystickInotify joystick_inotify;
 
@@ -192,11 +207,6 @@ int main()
 	sound_output.sample_buffer = (i16*)calloc(sound_output.byte_size(), 1); // @Volatile_bit_depth
 	write_sound_buffer(sound_output, sound_output.frame_rate / 15);
 
-	auto up = 0;
-	auto down = 0;
-	auto left = 0;
-	auto right = 0;
-
 	XKeyEvent prev_key_event = {};
 	bool key_is_pressed = false;
 
@@ -209,32 +219,53 @@ int main()
 		joystick_inotify_update(joystick_inotify, joysticks, max_joy_count);
 
 		for (int i = 0; i < max_joy_count; i++) {
+			const auto& prev_ctrl = prev_input.ctrls[i];
+			auto& new_ctrl = new_input.ctrls[i];
 			auto& joy = joysticks[i];
+			int up = -1, down = -1, left = -1, right = -1, lb = -1, rb = -1;
+			float joy_x = INFINITY, joy_y = INFINITY;
 			js_event joy_event;
 			while (joy.fd && read(joy.fd, &joy_event, sizeof(joy_event)) > 0) {
-				if (joy_event.type & JS_EVENT_BUTTON && joy_event.value) {
-					// printf("[JOYSTICK]: Button %i pressed\n", joy_event.number);
+				if (joy_event.type & JS_EVENT_BUTTON) {
+
+					// printf("[JOYSTICK]: Button %i %s\n", joy_event.number, joy_event.value ? "pressed" : "released");
+					down = joy_event.number == 0 ? joy_event.value : -1;
+					right = joy_event.number == 1 ? joy_event.value : -1;
+					left = joy_event.number == 2 ? joy_event.value : -1;
+					up = joy_event.number == 3 ? joy_event.value : -1;
+					lb = joy_event.number == 4 ? joy_event.value : -1;
+					rb = joy_event.number == 5 ? joy_event.value : -1;
 				} else if (joy_event.type & JS_EVENT_AXIS) {
+
 					// printf("[JOYSTICK]: Axis %i updated with: %i\n", joy_event.number, joy_event.value);
 					auto pos_threshold = joy.range_max / 5;
 					auto neg_threshold = joy.range_min / 5;
 					if (joy_event.number == 0) {
 						if (joy_event.value > pos_threshold)
-							joy.axis0 = (float)joy_event.value / joy.range_max;
+							joy_x = (float)joy_event.value / joy.range_max;
 						else if (joy_event.value < neg_threshold)
-							joy.axis0 = -(float)joy_event.value / joy.range_min;
+							joy_x = -(float)joy_event.value / joy.range_min;
 						else
-							joy.axis0 = 0;
+							joy_x = 0;
 					} else if (joy_event.number == 1) {
 						if (joy_event.value > pos_threshold)
-							joy.axis1 = (float)joy_event.value / joy.range_max;
+							joy_y = (float)joy_event.value / joy.range_max;
 						else if (joy_event.value < neg_threshold)
-							joy.axis1 = -(float)joy_event.value / joy.range_min;
+							joy_y = -(float)joy_event.value / joy.range_min;
 						else
-							joy.axis1 = 0;
+							joy_y = 0;
 					}
 				}
 			}
+
+			process_joy_btn_event(down, new_ctrl.down, prev_ctrl.down);
+			process_joy_btn_event(right, new_ctrl.right, prev_ctrl.right);
+			process_joy_btn_event(left, new_ctrl.left, prev_ctrl.left);
+			process_joy_btn_event(up, new_ctrl.up, prev_ctrl.up);
+			process_joy_btn_event(lb, new_ctrl.lb, prev_ctrl.lb);
+			process_joy_btn_event(rb, new_ctrl.rb, prev_ctrl.rb);
+			process_joy_axis_event(joy_x, new_ctrl.end_x, prev_ctrl.end_x);
+			process_joy_axis_event(joy_y, new_ctrl.end_y, prev_ctrl.end_y);
 		}
 
 		while (XPending(display) > 0) {
@@ -277,16 +308,16 @@ int main()
 				auto keysym = XLookupKeysym(&key_event, 0);
 				switch (keysym) {
 				case XK_w:
-					up = is_pressed;
+					// up = is_pressed;
 					break;
 				case XK_a:
-					left = is_pressed;
+					// left = is_pressed;
 					break;
 				case XK_s:
-					down = is_pressed;
+					// down = is_pressed;
 					break;
 				case XK_d:
-					right = is_pressed;
+					// right = is_pressed;
 					break;
 				}
 
@@ -332,8 +363,17 @@ int main()
 		GameScreenBuffer game_buffer = { .width = buffer.width, .height = buffer.height, .pixel_bits = buffer.pixel_bits, .buffer = buffer.buffer };
 		GameSoundBuffer game_sound_buffer = { .frame_rate = sound_output.frame_rate, .channel_num = sound_output.channel_num, .sample_buffer = sound_output.sample_buffer, .frame_count = frames_to_write };
 
-		game_update_and_render(game_buffer, game_sound_buffer);
+		game_update_and_render(game_buffer, game_sound_buffer, new_input);
 		write_sound_buffer(sound_output, frames_to_write);
+
+		if (use_xshm) {
+			XShmPutImage(display, window, gc, buffer.ximage, 0, 0, 0, 0, buffer.width, buffer.height, 0);
+			XFlush(display);
+		} else {
+			XPutImage(display, window, gc, buffer.ximage, 0, 0, 0, 0, buffer.width, buffer.height);
+		}
+
+		std::swap(new_input, prev_input);
 
 		static int printf_timer = 0;
 		printf_timer++;
@@ -348,24 +388,17 @@ int main()
 		}
 #endif
 
-		if (use_xshm) {
-			XShmPutImage(display, window, gc, buffer.ximage, 0, 0, 0, 0, buffer.width, buffer.height, 0);
-			XFlush(display);
-		} else {
-			XPutImage(display, window, gc, buffer.ximage, 0, 0, 0, 0, buffer.width, buffer.height);
-		}
-
 		const auto timer_end = get_ns_time();
 		const auto cycle_count_end = __rdtsc();
 		const auto ns_elapsed = timer_end - timer_start;
 		const auto cycles_elapsed = cycle_count_end - cycle_count_start;
-		timer_start = timer_end;
-		cycle_count_start = cycle_count_end;
-
 #if FPS
 		if (ns_elapsed > 0 && printf_timer % 100 == 0)
 			printf("[PERF]: %.2fms %ifps %.2fmc\n", ns_elapsed / 1e6, (int)(1e9 / ns_elapsed), cycles_elapsed / 1e6);
 #endif
+
+		timer_start = timer_end;
+		cycle_count_start = cycle_count_end;
 	}
 
 	// snd_pcm_drain(sound_output.handle);

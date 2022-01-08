@@ -1,6 +1,7 @@
 #include "game.h"
 #include "types.h"
 #include <math.h>
+#include <stdio.h>
 
 void game_output_sound(GameSoundBuffer& sound_output, const int tone_hz)
 {
@@ -29,11 +30,21 @@ void game_draw_thing(const GameScreenBuffer& buffer, const int x_offset, const i
 	}
 }
 
-void game_update_and_render(const GameScreenBuffer& buffer, GameSoundBuffer& sound_buffer)
+void game_update_and_render(const GameScreenBuffer& buffer, GameSoundBuffer& sound_buffer, const GameInput& input)
 {
 	static int x_offset;
 	static int y_offset;
-	static int tone_hz = 256;
+	int tone_hz = 256;
+
+	const auto& input0 = input.ctrls[0];
+	tone_hz += (int)(128.f * input0.end_x);
+	x_offset += (int)(4.0f * input0.end_x);
+	y_offset += (int)(4.0f * input0.end_y);
+
+	if (input0.down.ended_down) {
+		x_offset += 1;
+	}
+
 	game_output_sound(sound_buffer, tone_hz);
 	game_draw_thing(buffer, x_offset, y_offset);
 }

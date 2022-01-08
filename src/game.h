@@ -19,3 +19,38 @@ struct GameSoundBuffer {
 	i16* const sample_buffer; // @Volatile_bit_depth
 	const long frame_count;
 };
+
+struct GameBtnState {
+	int half_trans_count;
+	bool ended_down;
+};
+
+struct GameCtrlInput
+{
+	bool is_analog;
+
+	float start_x;
+	float start_y;
+	float min_x;
+	float min_y;
+	float max_x;
+	float max_y;
+	float end_x;
+	float end_y;
+
+	union {
+		GameBtnState buttons[6];
+		struct {
+			GameBtnState up;
+			GameBtnState down;
+			GameBtnState left;
+			GameBtnState right;
+			GameBtnState lb;
+			GameBtnState rb;
+		};
+	};
+};
+
+struct GameInput {
+	GameCtrlInput ctrls[4]; // @Volatile_max_joy_count
+};
