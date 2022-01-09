@@ -1,10 +1,10 @@
 #pragma once
+#include <stdint.h>
 #if SLOW
 #	include <assert.h>
 #else
 #	define assert()
 #endif
-#include <stdint.h>
 
 typedef uint8_t u8;
 typedef uint16_t u16;

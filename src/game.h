@@ -1,6 +1,15 @@
 #pragma once
 #include "types.h"
 
+#if INTERNAL
+struct buffer {
+	u64 size;
+	void* mem;
+};
+buffer platform_read_entire_file(const char* const filename);
+bool platform_write_entire_file(const char* const filename, void* const mem, const u32 mem_size);
+#endif
+
 struct GameScreenBuffer {
 	int width;
 	int height;

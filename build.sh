@@ -15,9 +15,11 @@ fi
 
 mkdir "$build_dir"
 
-cpp_flags="-ggdb -std=c++20 -DINTERNAL=1 -DSLOW=1"
+wno="-Wno-unused-variable -Wno-unused-parameter -Wno-missing-field-initializers"
+fno="-fno-rtti -fno-exceptions -fno-unwind-tables"
+cpp_flags="-Werror -Wall -Wextra -Wdouble-promotion $wno -Og -ggdb -std=c++20 $fno -DINTERNAL=1 -DSLOW=1 -nodefaultlibs"
 echo $cpp_flags > "$base_dir/$name.cxxflags"
 
 pushd "$build_dir" > /dev/null
-gcc "$src_dir/x11_platform.cpp" -lX11 -lXext -lm -ldl -lasound $cpp_flags
+gcc "$src_dir/x11_platform.cpp" -lm -lc -lX11 -lXext -ldl -lasound $cpp_flags
 popd > /dev/null

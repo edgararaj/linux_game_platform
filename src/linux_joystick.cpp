@@ -1,9 +1,15 @@
-#include "x11_platform.h"
 #include <dlfcn.h>
 #include <fcntl.h>
 #include <linux/joystick.h>
+#include <malloc.h>
+#include <math.h>
+#include <stdio.h>
+#include <string.h>
 #include <sys/inotify.h>
 #include <sys/ipc.h>
+#include <unistd.h>
+
+#include "types.h"
 
 #define MAX_EVENTS 1024
 #define LEN_NAME 16

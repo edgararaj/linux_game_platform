@@ -1,5 +1,6 @@
-#include "x11_platform.h"
 #include <alsa/asoundlib.h>
+
+#include "types.h"
 
 struct SoundOutput {
 	const int bit_depth = 16; // @Volatile_bit_depth
@@ -16,8 +17,6 @@ struct SoundOutput {
 
 bool alsa_setup(SoundOutput& sound_buffer)
 {
-	int error;
-
 #define ALSA_CALL(name, ...)                 \
 	if (name(__VA_ARGS__) < 0) {             \
 		printf("[ALSA]: " #name "failed\n"); \

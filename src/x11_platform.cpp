@@ -13,10 +13,9 @@
 #include "game.cpp"
 #include "game.h"
 #include "linux_alsa.cpp"
+#include "linux_file_io.cpp"
 #include "linux_joystick.cpp"
-#include "optional.h"
 #include "types.h"
-#include "x11_platform.h"
 
 #define ALSA_DEBUG 0
 #define FPS 1
@@ -199,7 +198,7 @@ int main()
 	game_memory.perm_storage_size = MiB(64);
 	game_memory.trans_storage_size = GiB(2);
 	game_memory.perm_storage = mmap(base_addr, game_memory.perm_storage_size + game_memory.trans_storage_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-	printf("mmap on %#018x\n", game_memory.perm_storage);
+	printf("mmap on %p\n", game_memory.perm_storage);
 	game_memory.trans_storage = (u8*)game_memory.perm_storage + game_memory.trans_storage_size;
 
 	if (!game_memory.perm_storage || game_memory.perm_storage == MAP_FAILED
@@ -228,8 +227,8 @@ int main()
 	sound_output.sample_buffer = (i16*)calloc(sound_output.byte_size(), 1); // @Volatile_bit_depth
 	write_sound_buffer(sound_output, sound_output.frame_rate / 15);
 
-	XKeyEvent prev_key_event = {};
-	bool key_is_pressed = false;
+	//	XKeyEvent prev_key_event = {};
+	//	bool key_is_pressed = false;
 
 	auto buffer_size_changed = false;
 	auto timer_start = get_ns_time();
@@ -300,7 +299,7 @@ int main()
 			} break;
 			case ClientMessage: {
 				auto& msg = *(XClientMessageEvent*)&event;
-				if (msg.data.l[0] == wm_delete_window_msg) {
+				if (msg.data.l[0] == (long)wm_delete_window_msg) {
 					is_running = false;
 					printf("[MSG]: ClientMessage\n");
 				}
@@ -358,8 +357,6 @@ int main()
 			} break;
 			}
 		}
-
-		auto& joy = joysticks[0];
 
 		if (buffer_size_changed) {
 			printf("BufferSizeChanged\n");
