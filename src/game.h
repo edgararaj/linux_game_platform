@@ -59,8 +59,11 @@ struct GameCtrlInput {
 	};
 };
 
+const auto max_joy_count = 4;
+const auto max_keyboard_count = 1;
+
 struct GameInput {
-	GameCtrlInput ctrls[4]; // @Volatile_max_joy_count
+	GameCtrlInput ctrls[max_joy_count + max_keyboard_count]; // @Volatile_max_joy_count
 };
 
 struct GameMemory {

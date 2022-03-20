@@ -51,11 +51,22 @@ void game_update_and_render(GameMemory& mem, const GameScreenBuffer& buffer, Gam
 	}
 
 	const auto& input0 = input.ctrls[0];
-	const auto tone_hz = 256 + (int)(128.f * input0.end_x);
-	state.x_offset += (int)(4.0f * input0.end_x);
-	state.y_offset += (int)(4.0f * input0.end_y);
+	const auto& input1 = input.ctrls[1];
+	const auto tone_hz = 256 + (int)(128.f * input1.end_x);
+	state.x_offset += (int)(4.0f * input1.end_x);
+	state.y_offset += (int)(4.0f * input1.end_y);
 
+	// printf("%i\n", input0.down.ended_down);
 	if (input0.down.ended_down) {
+		state.y_offset += 1;
+	}
+	if (input0.up.ended_down) {
+		state.y_offset -= 1;
+	}
+	if (input0.left.ended_down) {
+		state.x_offset -= 1;
+	}
+	if (input0.right.ended_down) {
 		state.x_offset += 1;
 	}
 

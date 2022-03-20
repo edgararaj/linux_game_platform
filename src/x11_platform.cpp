@@ -117,16 +117,77 @@ void write_sound_buffer(SoundOutput& sound_output, const int frames_to_write)
 
 void process_joy_axis_event(float state, float& new_state, const float& prev_state)
 {
-	new_state = state == INFINITY ? prev_state : state;
+	new_state = state;
 }
 
-void process_joy_btn_event(int state, GameBtnState& new_state, const GameBtnState& prev_state)
+void process_joy_btn_event(int btn, const js_event& event, GameBtnState& new_state, const GameBtnState& prev_state)
 {
-	new_state.ended_down = state == -1 ? prev_state.ended_down : state;
-	new_state.half_trans_count = prev_state.ended_down != state ? 1 : 0;
+	if (event.number == btn) {
+		new_state.ended_down = event.value;
+		new_state.half_trans_count = prev_state.ended_down != event.value;
+	}
+}
+
+void process_keyboard_event(bool state, GameBtnState& new_state)
+{
+	new_state.ended_down = state;
+	new_state.half_trans_count++;
 }
 
 auto is_running = true;
+
+void x11_process_input_msgs(const XEvent& event, GameCtrlInput& keyboard_ctrl)
+{
+	switch (event.type) {
+	case ButtonPress: {
+		printf("You pressed a button at (%i, %i)\n", event.xbutton.x, event.xbutton.y);
+	} break;
+	case KeyRelease: // fall through
+	case KeyPress: {
+		for (auto& btn : keyboard_ctrl.buttons) {
+			btn.half_trans_count = 0;
+		}
+		auto& key_event = *(XKeyEvent*)&event;
+
+#if 0
+				if (key_event.type == KeyPress)
+					printf("%i was Pressed at %ld\n", key_event.keycode, key_event.time);
+				else if (key_event.type == KeyRelease)
+					printf("%i was Released at %ld\n", key_event.keycode, key_event.time);
+#endif
+#if 0
+				auto was_pressed = key_event.type == KeyRelease || (prev_key_event.type == KeyRelease && prev_key_event.time == key_event.time && prev_key_event.keycode == key_event.keycode);
+				auto is_pressed = key_event.type == KeyPress || get_keycode_state(display, key_event.keycode);
+				prev_key_event = key_event;
+
+				if (was_pressed != is_pressed) {
+#endif
+		auto is_pressed = key_event.type == KeyPress;
+		auto keysym = XLookupKeysym(&key_event, 0);
+		switch (keysym) {
+		case XK_w:
+			process_keyboard_event(is_pressed, keyboard_ctrl.up);
+			break;
+		case XK_a:
+			process_keyboard_event(is_pressed, keyboard_ctrl.left);
+			break;
+		case XK_s:
+			process_keyboard_event(is_pressed, keyboard_ctrl.down);
+			break;
+		case XK_d:
+			process_keyboard_event(is_pressed, keyboard_ctrl.right);
+			break;
+		case XK_q:
+			process_keyboard_event(is_pressed, keyboard_ctrl.lb);
+			break;
+		case XK_e:
+			process_keyboard_event(is_pressed, keyboard_ctrl.rb);
+			break;
+		}
+
+	} break;
+	}
+}
 
 void sig_handler(int sig)
 {
@@ -211,7 +272,6 @@ int main()
 	auto& prev_input = inputs[0];
 	auto& new_input = inputs[1];
 
-	const auto max_joy_count = 1; // countof(new_input.ctrls);
 	Joystick joysticks[max_joy_count] = {};
 	JoystickInotify joystick_inotify;
 
@@ -239,57 +299,54 @@ int main()
 		joystick_inotify_update(joystick_inotify, joysticks, max_joy_count);
 
 		for (int i = 0; i < max_joy_count; i++) {
-			const auto& prev_ctrl = prev_input.ctrls[i];
-			auto& new_ctrl = new_input.ctrls[i];
+			const auto ctrl_index = i + max_keyboard_count;
+			const auto& prev_ctrl = prev_input.ctrls[ctrl_index];
+			auto& new_ctrl = new_input.ctrls[ctrl_index];
 			auto& joy = joysticks[i];
-			int up = -1, down = -1, left = -1, right = -1, lb = -1, rb = -1;
-			float joy_x = INFINITY, joy_y = INFINITY;
 			js_event joy_event;
 			while (joy.fd && read(joy.fd, &joy_event, sizeof(joy_event)) > 0) {
 				if (joy_event.type & JS_EVENT_BUTTON) {
 
 					// printf("[JOYSTICK]: Button %i %s\n", joy_event.number, joy_event.value ? "pressed" : "released");
-					down = joy_event.number == 0 ? joy_event.value : -1;
-					right = joy_event.number == 1 ? joy_event.value : -1;
-					left = joy_event.number == 2 ? joy_event.value : -1;
-					up = joy_event.number == 3 ? joy_event.value : -1;
-					lb = joy_event.number == 4 ? joy_event.value : -1;
-					rb = joy_event.number == 5 ? joy_event.value : -1;
+					process_joy_btn_event(0, joy_event, new_ctrl.down, prev_ctrl.down);
+					process_joy_btn_event(1, joy_event, new_ctrl.right, prev_ctrl.right);
+					process_joy_btn_event(2, joy_event, new_ctrl.left, prev_ctrl.left);
+					process_joy_btn_event(3, joy_event, new_ctrl.up, prev_ctrl.up);
+					process_joy_btn_event(4, joy_event, new_ctrl.lb, prev_ctrl.lb);
+					process_joy_btn_event(5, joy_event, new_ctrl.rb, prev_ctrl.rb);
+
 				} else if (joy_event.type & JS_EVENT_AXIS) {
 
 					// printf("[JOYSTICK]: Axis %i updated with: %i\n", joy_event.number, joy_event.value);
 					auto pos_threshold = joy.range_max / 5;
 					auto neg_threshold = joy.range_min / 5;
 					if (joy_event.number == 0) {
+						float joy_x;
 						if (joy_event.value > pos_threshold)
 							joy_x = (float)joy_event.value / joy.range_max;
 						else if (joy_event.value < neg_threshold)
 							joy_x = -(float)joy_event.value / joy.range_min;
 						else
 							joy_x = 0;
+
+						new_ctrl.end_x = joy_x;
+
 					} else if (joy_event.number == 1) {
+						float joy_y;
 						if (joy_event.value > pos_threshold)
 							joy_y = (float)joy_event.value / joy.range_max;
 						else if (joy_event.value < neg_threshold)
 							joy_y = -(float)joy_event.value / joy.range_min;
 						else
 							joy_y = 0;
+
+						new_ctrl.end_y = joy_y;
 					}
 				}
 			}
-
-			process_joy_btn_event(down, new_ctrl.down, prev_ctrl.down);
-			process_joy_btn_event(right, new_ctrl.right, prev_ctrl.right);
-			process_joy_btn_event(left, new_ctrl.left, prev_ctrl.left);
-			process_joy_btn_event(up, new_ctrl.up, prev_ctrl.up);
-			process_joy_btn_event(lb, new_ctrl.lb, prev_ctrl.lb);
-			process_joy_btn_event(rb, new_ctrl.rb, prev_ctrl.rb);
-			process_joy_axis_event(joy_x, new_ctrl.end_x, prev_ctrl.end_x);
-			process_joy_axis_event(joy_y, new_ctrl.end_y, prev_ctrl.end_y);
 		}
 
 		while (XPending(display) > 0) {
-
 			XEvent event;
 			XNextEvent(display, &event);
 			switch (event.type) {
@@ -304,44 +361,6 @@ int main()
 					printf("[MSG]: ClientMessage\n");
 				}
 			} break;
-			case ButtonPress: {
-				printf("You pressed a button at (%i, %i)\n", event.xbutton.x, event.xbutton.y);
-			} break;
-			case KeyRelease: // fall through
-			case KeyPress: {
-				auto& key_event = *(XKeyEvent*)&event;
-
-#if 0
-				if (key_event.type == KeyPress)
-					printf("%i was Pressed at %ld\n", key_event.keycode, key_event.time);
-				else if (key_event.type == KeyRelease)
-					printf("%i was Released at %ld\n", key_event.keycode, key_event.time);
-#endif
-#if 0
-				auto was_pressed = key_event.type == KeyRelease || (prev_key_event.type == KeyRelease && prev_key_event.time == key_event.time && prev_key_event.keycode == key_event.keycode);
-				auto is_pressed = key_event.type == KeyPress || get_keycode_state(display, key_event.keycode);
-				prev_key_event = key_event;
-
-				if (was_pressed != is_pressed) {
-#endif
-				auto is_pressed = key_event.type == KeyPress;
-				auto keysym = XLookupKeysym(&key_event, 0);
-				switch (keysym) {
-				case XK_w:
-					// up = is_pressed;
-					break;
-				case XK_a:
-					// left = is_pressed;
-					break;
-				case XK_s:
-					// down = is_pressed;
-					break;
-				case XK_d:
-					// right = is_pressed;
-					break;
-				}
-
-			} break;
 			case ConfigureNotify: {
 				auto& msg = *(XConfigureEvent*)&event;
 
@@ -353,11 +372,11 @@ int main()
 					buffer.height = msg.height;
 					buffer_size_changed = true;
 				}
-
 			} break;
+			default:
+				x11_process_input_msgs(event, new_input.ctrls[0]);
 			}
 		}
-
 		if (buffer_size_changed) {
 			printf("BufferSizeChanged\n");
 			delete_screen_buffer(buffer, display);
